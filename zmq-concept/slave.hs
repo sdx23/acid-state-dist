@@ -13,10 +13,13 @@ main = do
     runZMQ $ do
         sock <- socket Req
         connect sock addr
-        send sock [] "started"
+        send sock [] "S"
         forever $ do
             liftIO $ threadDelay 500000
-            c <- receive sock 
-            liftIO . CS.putStrLn $ c
-            send sock [] $ CS.append "Done: " $ c
-            liftIO $ hFlush stdout
+            msg <- receive sock 
+            case CS.head msg of
+                'U' -> do
+                    send sock [] $ CS.append "Done: " $ msg
+                    liftIO . CS.putStrLn $ CS.append "D" $ CS.tail msg
+                    liftIO $ hFlush stdout
+                _ -> return ()

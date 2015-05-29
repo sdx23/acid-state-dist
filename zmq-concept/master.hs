@@ -16,11 +16,18 @@ main = do
             ident <- receive sock
             _ <- receive sock
             msg <- receive sock
-            send sock [SendMore] ident
-            send sock [SendMore] ""
-            send sock [] (CS.pack (show (i :: Int)))
+            case CS.head msg of
+                'S' -> sendUpdate sock ident 0
+                'D' -> sendUpdate sock ident i
 
             liftIO $ CS.putStrLn $ CS.append (formatID ident) msg
             liftIO $ hFlush stdout
         return ()
     where formatID i = CS.cons '[' $ CS.append i "] "
+
+sendUpdate sock id num = do
+    send sock [SendMore] id
+    send sock [SendMore] ""
+    send sock [] $ CS.cons 'U' (CS.pack (show (num :: Int)))
+
+

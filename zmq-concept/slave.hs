@@ -15,7 +15,7 @@ main = do
         connect sock addr
         send sock [] "S"
         forever $ do
-            liftIO $ threadDelay 500000
+            liftIO $ threadDelay 100000
             msg <- receive sock 
             case CS.head msg of
                 'U' -> do

@@ -24,11 +24,14 @@ main = do
             case CS.head msg of
                 'U' -> do
                     let nr = msgToRev msg
-                    if nr == mcr + 1 then do
+                    if (nr == mcr + 1) || (nr == mcr) then do
                         send sock [] $ CS.cons 'D' $ CS.tail msg
-                        liftIO $ modifyIORef myRev (+1)
-                        liftIO . CS.putStrLn $ CS.append "D" $ CS.tail msg
-                        liftIO $ hFlush stdout
+                        if nr == mcr then
+                            liftIO $ print "W: ignoring increment which is none"
+                        else do
+                            liftIO $ modifyIORef myRev (+1)
+                            liftIO . CS.putStrLn $ CS.append "D" $ CS.tail msg
+                            liftIO $ hFlush stdout
                     else
                         error $ "E: invalid revision increment " ++ show mcr ++ " -> " ++ show nr
                         -- when coordinator keeps track anyway, this

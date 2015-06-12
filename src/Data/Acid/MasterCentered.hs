@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE DeriveDataTypeable, RecordWildCards #-}
 -----------------------------------------------------------------------------
 {- |
   Module      :  Data.Acid.MasterCentered
@@ -37,7 +37,11 @@ import Data.Acid.Local
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
 import Control.Concurrent (forkIO)
 
-import System.ZMQ4 (socket, Router, bind, receive, liftIO)
+import System.ZMQ4 (Context, Socket, Router(..), context, term, socket, close, bind, unbind, send, receive)
+import Data.IORef (IORef, newIORef)
+
+-- auto imports following - need to be cleaned up
+import Control.Monad.IO.Class(liftIO)
 
 type PortNumber = Int
 
@@ -46,32 +50,32 @@ data RepStatus = Done | Replicating | Cleanup
 data MasterState st 
     = MasterState { localState :: AcidState st
                   , repStatus :: IORef RepStatus
-                  , repHandler :: Chan
-                  }
+                  , zmqContext :: Context
+                  , zmqAddr :: String
+                  , zmqSocket :: Socket Router
+                  } deriving (Typeable)
 
 debug :: String -> IO ()
-debug msg = return ()
-        -- putStrLn msg
+debug = putStrLn 
         
--- | The replication handler on master node
-masterRepHandler :: Chan -> IORef RepStatus -> String -> IO()
-masterRepHandler repHandler repStatus addr = runZMQ $ do
-        sock <- socket Router
-        bind sock addr
+-- | The replication handler on master node. Does
+--      o handle receiving requests from nodes,
+--      o answering as needed (old updates),
+--      o bookkeeping on node states. 
+masterRepHandler :: Socket Router -> IORef RepStatus -> IO ()
+masterRepHandler sock repStatus = do
         let loop = do
-            -- take one frame - only if there is one, else it'd block
-            inputWaiting <- poll 10 [Sock sock [In] Nothing]
-            unless (null $ head inputWaiting) $ do
+                -- take one frame
                 ident <- receive sock
                 _ <- receive sock
                 msg <- receive sock
+                debug $ "from [" ++ show ident ++ "]: " ++ show msg
                 -- now handle received stuff
-                return ()
-            -- handle send events
-            
-            -- loop around
-            liftIO $ debug "loop iteration"
-            loop
+                -- handle send events
+                
+                -- loop around
+                liftIO $ debug "loop iteration"
+                loop
         loop
 {- what do we need to do in the zmq part?
   there is two things:
@@ -79,11 +83,7 @@ masterRepHandler repHandler repStatus addr = runZMQ $ do
         - may change repStatus
         - may need to send out rep requests
     2) sending messages proactively, due to an update
-  problem: the receiving loop may block the proactive sending
-  solution: before receiving, check whether there is something
-
-  this is still ugly, as it is polling. Why can't we do something reactive?
-    not use zmq-monadic but hand out the socket to threads doing 1) and 2).
+ not use zmq-monadic but hand out the socket to threads doing 1) and 2).
     there may then be "write" collisions. use locking?
 -}
 
@@ -97,21 +97,31 @@ openMasterState :: (IsAcidic st, Typeable st) =>
 openMasterState port initialState = do
         debug "opening master state"
         -- remote
-        rs <- newIORef
-        rh <- newChan
+        ctx <- context
+        sock <- socket ctx Router
+        rs <- newIORef Done
         let addr = "tcp://127.0.0.1:" ++ show port
-        forkIO $ masterRepHandler rh rs addr 
+        bind sock addr
+        forkIO $ masterRepHandler sock rs 
         -- local
         lst <- openLocalState initialState
         return $ toAcidState MasterState { localState = lst
                                          , repStatus = rs
-                                         , repHandler = rh
+                                         , zmqContext = ctx
+                                         , zmqAddr = addr
+                                         , zmqSocket = sock
                                          }
 
 -- | Close the master state.
-closeMasterState :: MasterState -> IO ()
+closeMasterState :: MasterState st -> IO ()
 closeMasterState MasterState{..} = do
         debug "closing master state"
+        -- wait all nodes done
+        -- cleanup zmq
+        unbind zmqSocket zmqAddr 
+        close zmqSocket
+        term zmqContext
+        -- cleanup local state
         closeAcidState localState
 
 enslaveState = undefined
@@ -125,6 +135,6 @@ toAcidState master
               , createCheckpoint   = createCheckpoint $ localState master
               , createArchive      = createArchive $ localState master
               , closeAcidState     = closeMasterState master 
-              , acidSubState       = acidSubState $ localState master
+              , acidSubState       = mkAnyState master
               }
 

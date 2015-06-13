@@ -18,7 +18,7 @@ main = do
         connect sock addr
         send sock [] "S"
         forever $ do
-            liftIO $ threadDelay 100000
+            -- liftIO $ threadDelay 100000
             msg <- receive sock 
             mcr <- liftIO $ readIORef myRev
             case CS.head msg of

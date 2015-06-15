@@ -57,10 +57,13 @@ library
   -- other-extensions:    
   
   -- Other library packages from which modules are imported.
-  build-depends:       base >=4.7 && <4.8,
+  build-depends:       base > 4.7 && < 4.9,
                        safecopy,
                        acid-state > 0.12 && < 0.13,
+                       concurrent-extra,
+                       cereal,
                        zeromq4-haskell,
+                       bytestring,
                        containers,
                        transformers,
                        mtl

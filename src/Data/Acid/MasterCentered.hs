@@ -29,8 +29,10 @@ module Data.Acid.MasterCentered
 import Data.Typeable
 import Data.SafeCopy
 
+-- some not exported by acid-state, export and reinstall: Core, Abstract, Log
 import Data.Acid
-import Data.Acid.Abstract -- not exported by acid-state, export and reinstall
+import Data.Acid.Core
+import Data.Acid.Abstract 
 import Data.Acid.Advanced
 import Data.Acid.Local
 import Data.Acid.Log
@@ -78,7 +80,7 @@ debug = putStrLn
 --      o handle receiving requests from nodes,
 --      o answering as needed (old updates),
 --      o bookkeeping on node states. 
-masterRepHandler :: MasterState st -> IO ()
+masterRepHandler :: (Typeable st) => MasterState st -> IO ()
 masterRepHandler MasterState{..} = do
         let loop = do
                 -- take one frame
@@ -102,10 +104,9 @@ masterRepHandler MasterState{..} = do
         loop
         where cr = undefined :: Int
 
---getPastUpdates :: (SafeCopy es) => AcidState st -> IO [es]
---getPastUpdates state = readEntriesFrom (localEvents $ acidSubState state) 0
-getPastUpdates state = undefined
---todo: how do I get the type signature right?
+-- | Fetch past Updates from FileLog for replication.
+getPastUpdates :: (Typeable st) => AcidState st -> IO [Tagged CSL.ByteString]
+getPastUpdates state = readEntriesFrom (localEvents $ downcast state) 0
 
 
 -- | Update the NodeStatus after a node has replicated an Update.
@@ -126,24 +127,30 @@ updateNodeStatus nodeStatus rDone ident msg cr =
 --   i.e. send all past events as Updates.
 --   This temporarily blocks all other communication.
 -- todo: updates received by slaves are problematic here!
-connectNode :: Socket Router -> MVar NodeStatus -> NodeIdentity -> [ByteString] -> IO ()
+connectNode :: Socket Router -> MVar NodeStatus -> NodeIdentity -> [Tagged CSL.ByteString] -> IO ()
 connectNode sock nodeStatus i oldUpdates = 
     modifyMVar_ nodeStatus $ \ns -> do
         forM_ oldUpdates $ \u -> do
-            sendUpdate sock u i
+            sendUpdate sock (encoded u) i
             (ident, msg) <- receiveFrame sock
             when (ident /= i) $ error "received message not from the new node"
             -- todo: also check increment validity
         return $ M.insert i rev ns 
     where  
-          rev = length oldUpdates
+        encoded = undefined
+        rev = length oldUpdates
+
+encodeUpdate :: (UpdateEvent e) => e -> ByteString
+encodeUpdate event = runPut (safePut event)
 
 -- | Send one (encoded) Update to a Slave.
 sendUpdate :: Socket Router -> ByteString -> NodeIdentity -> IO ()
 sendUpdate sock update ident = do
     send sock [SendMore] ident
     send sock [SendMore] ""
-    send sock [] $ 'U' `CS.cons` update
+    send sock [] $ 'U' `CS.cons` encoded
+    where 
+        encoded = undefined -- encode Tag and BS of update
     
 
 -- | Receive one Frame. A Frame consists of three messages: 

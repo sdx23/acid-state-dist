@@ -48,8 +48,12 @@ cabal-version:       >=1.10
 
 library
   -- Modules exported by the library.
-  exposed-modules:     Data.Acid.MasterCentered
+  exposed-modules:     Data.Acid.Centered,
+                       Data.Acid.Centered.Master,
+                       Data.Acid.Centered.Slave
   
+  other-modules:       Data.Acid.Centered.Common
+
   -- Modules included in this library but not exported.
   -- other-modules:       
   

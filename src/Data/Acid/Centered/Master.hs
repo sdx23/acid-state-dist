@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, RecordWildCards, OverloadedStrings #-}
------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 {- |
-  Module      :  Data.Acid.MasterCentered
+  Module      :  Data.Acid.Centered.Master
   Copyright   :  ?
 
   Maintainer  :  max.voit+hdv@with-eyes.net
@@ -13,17 +13,14 @@
 
 -}
 {- big chunks still todo:
-    o master part
-    o slave part
     o checkpoints / archives
     o authentification
     o encryption
 -}
-module Data.Acid.MasterCentered
+module Data.Acid.Centered.Master
     (
-    -- * Master / Slave
       openMasterState
-    , enslaveState
+    , MasterState(..)
     ) where
 
 import Data.Typeable
@@ -38,16 +35,16 @@ import Data.Acid.Local
 import Data.Acid.Log
 import Data.Serialize (runPutLazy, runPut)
 
-import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
+import Data.Acid.Centered.Common
+
 import Control.Concurrent (forkIO)
 import Control.Monad (forever, when, forM_)
 import qualified Control.Concurrent.Event as E
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 
-import System.ZMQ4 (Context, Socket, Router(..), Req(..), Receiver, Flag(..),
+import System.ZMQ4 (Context, Socket, Router(..), Receiver, Flag(..),
                     context, term, socket, close, 
-                    bind, unbind, connect, disconnect,
-                    send, receive, sendMulti, receiveMulti)
+                    bind, unbind,
+                    send, receive)
 
 import qualified Data.Map as M
 import Data.Map (Map)
@@ -55,14 +52,8 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 import qualified Data.ByteString.Char8 as CS
 import Data.ByteString.Char8 (ByteString)
 
-
 -- auto imports following - need to be cleaned up
 import Control.Concurrent.MVar(MVar, modifyMVar, modifyMVar_, withMVar, newMVar)
-
-type PortNumber = Int
-
-type NodeIdentity = ByteString
-type NodeStatus = Map NodeIdentity Int
 
 data MasterState st 
     = MasterState { localState :: AcidState st
@@ -73,8 +64,8 @@ data MasterState st
                   , zmqSocket :: Socket Router
                   } deriving (Typeable)
 
-debug :: String -> IO ()
-debug = putStrLn 
+type NodeIdentity = ByteString
+type NodeStatus = Map NodeIdentity Int
         
 -- | The replication handler on master node. Does
 --      o handle receiving requests from nodes,
@@ -95,7 +86,7 @@ masterRepHandler MasterState{..} = do
                     -- Update was _D_one 
                     'D' -> updateNodeStatus nodeStatus repDone ident msg cr
                     -- Slave sends an _U_date
-                    'U' -> undefined
+                    'U' -> undefined -- todo: not yet
                     -- no other messages possible
                     _ -> error $ "Unknown message received: " ++ CS.unpack msg
                 -- loop around
@@ -225,7 +216,7 @@ sendUpdateSlaves MasterState{..} event = withMVar nodeStatus $ \ns -> do
 
 toAcidState :: IsAcidic st => MasterState st -> AcidState st
 toAcidState master 
-  = AcidState { _scheduleUpdate    = scheduleUpdate $ localState master
+  = AcidState { _scheduleUpdate    = scheduleMasterUpdate master 
               , scheduleColdUpdate = scheduleColdUpdate $ localState master
               , _query             = query $ localState master
               , queryCold          = queryCold $ localState master
@@ -235,103 +226,4 @@ toAcidState master
               , acidSubState       = mkAnyState master
               }
 
---------------------------------------------------------------------------------
--- SLAVE part
---todo: this should be seperate modules
---
--- What does a Slave do?
---      open its localState
---      check at which revision it is
---      request to be updated
---
---      do Queries locally
---      deny Updates (for now)
---      receive messages from master and respond
---      
---      notify master he's out, close local
---
--- TODO
---      seperate module
---      overthink format of messages 
---          (extra packet for data? enough space in there?)
---      quit message
---      quit handler
---
 
-data SlaveState st 
-    = SlaveState { slaveLocalState :: AcidState st
-                 , slaveZmqContext :: Context
-                 , slaveZmqAddr :: String
-                 , slaveZmqSocket :: Socket Req
-                 } deriving (Typeable)
-
--- | Open a local State as Slave for a Master.
-enslaveState :: (IsAcidic st, Typeable st) =>
-            String          -- ^ hostname of the Master
-         -> PortNumber      -- ^ port to connect to
-         -> st              -- ^ initial state
-         -> IO (AcidState st)
-enslaveState address port initialState = do
-        debug "opening enslaved state"
-        -- local
-        lst <- openLocalState initialState
-        -- remote
-        ctx <- context
-        sock <- socket ctx Req
-        let addr = "tcp://" ++ address ++ ":" ++ show port
-        connect sock addr
-        let slaveState = SlaveState { slaveLocalState = lst
-                                    , slaveZmqContext = ctx
-                                    , slaveZmqAddr = addr
-                                    , slaveZmqSocket = sock
-                                    }
-        forkIO $ slaveRepHandler slaveState 
-        return $ slaveToAcidState slaveState 
-
-slaveRepHandler :: SlaveState st -> IO ()
-slaveRepHandler SlaveState{..} = forever $ do
-        msg <- receive slaveZmqSocket
-        case CS.head msg of
-            -- We are sent an Update.
-            'U' -> replicateUpdate slaveZmqSocket msg slaveLocalState
-            -- We are requested to Quit.
-            'Q' -> undefined -- todo: how get a State that wasn't closed closed?
-            -- no other messages possible
-            _ -> error $ "Unknown message received: " ++ CS.unpack msg
-
-replicateUpdate :: Socket Req -> ByteString -> AcidState st -> IO ()
-replicateUpdate sock msg lst = do
-        debug "Got an Update to replicate."
-        CS.putStrLn msg
-        -- commit it locally 
-        let tag = undefined
-        scheduleColdUpdate lst (tag, CSL.fromStrict msg)
-        -- send reply: we're done
-        send sock [] "D"
-
-
--- | Close an enslaved State.
-liberateState :: SlaveState st -> IO ()
-liberateState SlaveState{..} = do
-        debug "closing slave state"
-        -- send master quit message
-        -- todo^
-        -- cleanup zmq
-        disconnect slaveZmqSocket slaveZmqAddr 
-        close slaveZmqSocket
-        term slaveZmqContext
-        -- cleanup local state
-        closeAcidState slaveLocalState
-
-
-slaveToAcidState :: IsAcidic st => SlaveState st -> AcidState st
-slaveToAcidState slave 
-  = AcidState { _scheduleUpdate    = undefined
-              , scheduleColdUpdate = undefined
-              , _query             = query $ slaveLocalState slave
-              , queryCold          = queryCold $ slaveLocalState slave
-              , createCheckpoint   = undefined
-              , createArchive      = undefined
-              , closeAcidState     = liberateState slave 
-              , acidSubState       = mkAnyState slave
-              }

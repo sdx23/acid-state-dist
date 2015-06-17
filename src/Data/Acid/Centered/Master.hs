@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable, RecordWildCards, OverloadedStrings #-}
+{-# LANGUAGE DeriveDataTypeable, RecordWildCards #-}
 --------------------------------------------------------------------------------
 {- |
   Module      :  Data.Acid.Centered.Master
@@ -33,12 +33,15 @@ import Data.Acid.Abstract
 import Data.Acid.Advanced
 import Data.Acid.Local
 import Data.Acid.Log
-import Data.Serialize (runPutLazy, runPut)
+import Data.Serialize (Serialize(..), put, get,
+                       decode, encode,
+                       runPutLazy, runPut
+                      )
 
 import Data.Acid.Centered.Common
 
 import Control.Concurrent (forkIO)
-import Control.Monad (forever, when, forM_)
+import Control.Monad (forever, when, forM_, liftM, liftM2)
 import qualified Control.Concurrent.Event as E
 
 import System.ZMQ4 (Context, Socket, Router(..), Receiver, Flag(..),
@@ -77,23 +80,25 @@ masterRepHandler MasterState{..} = do
                 -- take one frame
                 (ident, msg) <- receiveFrame zmqSocket
                 -- handle according frame contents
-                case CS.head msg of
-                    -- a _N_ew slave node
-                    'N' -> do
+                case msg of
+                    NewSlave r -> do
                         -- todo: the state should be locked at this point to avoid losses
                         oldUpdates <- getPastUpdates localState
                         connectNode zmqSocket nodeStatus ident oldUpdates
-                    -- Update was _D_one 
-                    'D' -> updateNodeStatus nodeStatus repDone ident msg cr
+                    RepDone r -> updateNodeStatus nodeStatus repDone ident r cr
                     -- Slave sends an _U_date
-                    'U' -> undefined -- todo: not yet
+                    --'U' -> undefined -- todo: not yet
                     -- no other messages possible
-                    _ -> error $ "Unknown message received: " ++ CS.unpack msg
+                    _ -> error $ "Unknown message received: " ++ show msg
                 -- loop around
                 debug "loop iteration"
                 loop
         loop
         where cr = undefined :: Int
+
+
+
+
 
 -- | Fetch past Updates from FileLog for replication.
 getPastUpdates :: (Typeable st) => AcidState st -> IO [Tagged CSL.ByteString]
@@ -101,11 +106,12 @@ getPastUpdates state = readEntriesFrom (localEvents $ downcast state) 0
 
 
 -- | Update the NodeStatus after a node has replicated an Update.
-updateNodeStatus :: MVar NodeStatus -> E.Event -> NodeIdentity -> ByteString -> Int -> IO ()
-updateNodeStatus nodeStatus rDone ident msg cr = 
+updateNodeStatus :: MVar NodeStatus -> E.Event -> NodeIdentity -> Int -> Int -> IO ()
+updateNodeStatus nodeStatus rDone ident r cr = 
     modifyMVar_ nodeStatus $ \ns -> do
         -- todo: there should be a fancy way to do this
         --when (M.findWithDefault 0 ident ns /= (cr - 1)) $ error "Invalid increment of node status."
+        -- todo: checks sensible?
         let rs = M.adjust (+1) ident ns
         when (allNodesDone rs) $ do
             E.set rDone
@@ -121,8 +127,8 @@ updateNodeStatus nodeStatus rDone ident msg cr =
 connectNode :: Socket Router -> MVar NodeStatus -> NodeIdentity -> [Tagged CSL.ByteString] -> IO ()
 connectNode sock nodeStatus i oldUpdates = 
     modifyMVar_ nodeStatus $ \ns -> do
-        forM_ oldUpdates $ \u -> do
-            sendUpdate sock (encoded u) i
+        forM_ (zip oldUpdates [0..]) $ \(u, r) -> do
+            sendUpdate sock r (encoded u) i
             (ident, msg) <- receiveFrame sock
             when (ident /= i) $ error "received message not from the new node"
             -- todo: also check increment validity
@@ -135,25 +141,27 @@ encodeUpdate :: (UpdateEvent e) => e -> ByteString
 encodeUpdate event = runPut (safePut event)
 
 -- | Send one (encoded) Update to a Slave.
-sendUpdate :: Socket Router -> ByteString -> NodeIdentity -> IO ()
-sendUpdate sock update ident = do
+sendUpdate :: Socket Router -> Int -> ByteString -> NodeIdentity -> IO ()
+sendUpdate sock revision update ident = do
     send sock [SendMore] ident
-    send sock [SendMore] ""
-    send sock [] $ 'U' `CS.cons` encoded
+    send sock [SendMore] CS.empty
+    send sock [] $ encode $ DoRep revision update
     where 
         encoded = undefined -- encode Tag and BS of update
     
 
 -- | Receive one Frame. A Frame consists of three messages: 
 --      sender ID, empty message, and actual content 
-receiveFrame :: (Receiver t) => Socket t -> IO (NodeIdentity, ByteString)
+receiveFrame :: (Receiver t) => Socket t -> IO (NodeIdentity, SlaveMessage)
 receiveFrame sock = do
     ident <- receive sock
     _     <- receive sock
     msg   <- receive sock
     debug $ "received from [" ++ show ident ++ "]: " ++ show msg
-    return (ident, msg)
-    
+    case decode msg of
+        -- todo: pass on exceptions
+        Left str -> error $ "Data.Serialize.decode failed on SlaveMessage: " ++ show msg
+        Right smsg -> return (ident, smsg)
 
 -- | Open the master state.
 openMasterState :: (IsAcidic st, Typeable st) =>
@@ -202,16 +210,17 @@ scheduleMasterUpdate masterState event = do
     res <- scheduleUpdate (localState masterState) event
     -- sent Update to Slaves
     E.clear $ repDone masterState
-    sendUpdateSlaves masterState event
+    sendUpdateSlaves masterState revision event
     -- wait for Slaves finish replication
     E.wait $ repDone masterState
     return res
+    where revision = undefined
 
-sendUpdateSlaves :: (SafeCopy e) => MasterState st -> e -> IO ()
-sendUpdateSlaves MasterState{..} event = withMVar nodeStatus $ \ns -> do
+sendUpdateSlaves :: (SafeCopy e) => MasterState st -> Int -> e -> IO ()
+sendUpdateSlaves MasterState{..} revision event = withMVar nodeStatus $ \ns -> do
     let allSlaves = M.keys ns
     let encoded = runPut (safePut event)
-    forM_ allSlaves $ \i -> sendUpdate zmqSocket encoded i
+    forM_ allSlaves $ \i -> sendUpdate zmqSocket revision encoded i
 
 
 toAcidState :: IsAcidic st => MasterState st -> AcidState st

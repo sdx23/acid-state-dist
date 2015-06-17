@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable, RecordWildCards, OverloadedStrings #-}
+{-# LANGUAGE DeriveDataTypeable, RecordWildCards #-}
 --------------------------------------------------------------------------------
 {- |
   Module      :  Data.Acid.CenteredSlave.hs
@@ -36,6 +36,10 @@ module Data.Acid.Centered.Slave
 
 import Data.Typeable
 import Data.SafeCopy
+import Data.Serialize (Serialize(..), put, get,
+                       decode, encode,
+                       runPutLazy, runPut
+                      )
 
 import Data.Acid
 import Data.Acid.Abstract
@@ -98,13 +102,15 @@ enslaveState address port initialState = do
 slaveRepHandler :: SlaveState st -> IO ()
 slaveRepHandler SlaveState{..} = forever $ do
         msg <- receive slaveZmqSocket
-        case CS.head msg of
-            -- We are sent an Update.
-            'U' -> replicateUpdate slaveZmqSocket msg slaveLocalState
-            -- We are requested to Quit.
-            'Q' -> undefined -- todo: how get a State that wasn't closed closed?
-            -- no other messages possible
-            _ -> error $ "Unknown message received: " ++ CS.unpack msg
+        case decode msg of
+            Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show msg
+            Right mmsg -> case mmsg of
+                    -- We are sent an Update.
+                    DoRep r d -> replicateUpdate slaveZmqSocket msg slaveLocalState
+                    -- We are requested to Quit.
+                    -- Quit -> undefined -- todo: how get a State that wasn't closed closed?
+                    -- no other messages possible
+                    _ -> error $ "Unknown message received: " ++ show mmsg
 
 replicateUpdate :: Socket Req -> ByteString -> AcidState st -> IO ()
 replicateUpdate sock msg lst = do
@@ -114,8 +120,11 @@ replicateUpdate sock msg lst = do
         let tag = undefined
         scheduleColdUpdate lst (tag, CSL.fromStrict msg)
         -- send reply: we're done
-        send sock [] "D"
+        sendToMaster sock $ RepDone revision
+        where revision = undefined
 
+sendToMaster :: Socket Req -> SlaveMessage -> IO ()
+sendToMaster sock smsg = send sock [] $ encode smsg
 
 -- | Close an enslaved State.
 liberateState :: SlaveState st -> IO ()

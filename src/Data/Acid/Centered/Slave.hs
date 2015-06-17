@@ -38,10 +38,12 @@ import Data.Typeable
 import Data.SafeCopy
 import Data.Serialize (Serialize(..), put, get,
                        decode, encode,
-                       runPutLazy, runPut
+                       runPutLazy, runPut,
+                       runGet
                       )
 
 import Data.Acid
+import Data.Acid.Core
 import Data.Acid.Abstract
 import Data.Acid.Local
 
@@ -105,33 +107,35 @@ slaveRepHandler SlaveState{..} = forever $ do
         case decode msg of
             Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show msg
             Right mmsg -> case mmsg of
-                    -- We are sent an Update.
-                    DoRep r d -> replicateUpdate slaveZmqSocket msg slaveLocalState
+                    -- We are sent an Update to replicate.
+                    DoRep r d -> replicateUpdate slaveZmqSocket r d slaveLocalState
                     -- We are requested to Quit.
-                    -- Quit -> undefined -- todo: how get a State that wasn't closed closed?
+                    MasterQuit -> undefined -- todo: how get a State that wasn't closed closed?
                     -- no other messages possible
                     _ -> error $ "Unknown message received: " ++ show mmsg
 
-replicateUpdate :: Socket Req -> ByteString -> AcidState st -> IO ()
-replicateUpdate sock msg lst = do
+replicateUpdate :: Socket Req -> Int -> ByteString -> AcidState st -> IO ()
+replicateUpdate sock rev event lst = do
         debug "Got an Update to replicate."
-        CS.putStrLn msg
         -- commit it locally 
-        let tag = undefined
-        scheduleColdUpdate lst (tag, CSL.fromStrict msg)
+        scheduleColdUpdate lst $ decodeEvent event
         -- send reply: we're done
         sendToMaster sock $ RepDone revision
         where revision = undefined
-
+              decodeEvent ev = case runGet safeGet ev of
+                                Left str -> error str
+                                Right val -> val
+    
+-- | Send a message to Master.
 sendToMaster :: Socket Req -> SlaveMessage -> IO ()
 sendToMaster sock smsg = send sock [] $ encode smsg
 
 -- | Close an enslaved State.
 liberateState :: SlaveState st -> IO ()
 liberateState SlaveState{..} = do
-        debug "closing slave state"
+        debug "Closing Slave state."
         -- send master quit message
-        -- todo^
+        sendToMaster slaveZmqSocket SlaveQuit
         -- cleanup zmq
         disconnect slaveZmqSocket slaveZmqAddr 
         close slaveZmqSocket

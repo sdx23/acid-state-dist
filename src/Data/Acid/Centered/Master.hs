@@ -81,13 +81,17 @@ masterRepHandler MasterState{..} = do
                 (ident, msg) <- receiveFrame zmqSocket
                 -- handle according frame contents
                 case msg of
+                    -- New Slave joined.
                     NewSlave r -> do
-                        -- todo: the state should be locked at this point to avoid losses
+                        -- todo: the state should be locked at this point to avoid losses(?)
                         oldUpdates <- getPastUpdates localState
                         connectNode zmqSocket nodeStatus ident oldUpdates
+                    -- Slave is done replicating.
                     RepDone r -> updateNodeStatus nodeStatus repDone ident r cr
-                    -- Slave sends an _U_date
-                    --'U' -> undefined -- todo: not yet
+                    -- Slave sends an Udate.
+                    -- todo: not yet
+                    -- Slave quits.
+                    SlaveQuit -> removeFromNodeStatus nodeStatus ident
                     -- no other messages possible
                     _ -> error $ "Unknown message received: " ++ show msg
                 -- loop around
@@ -97,13 +101,14 @@ masterRepHandler MasterState{..} = do
         where cr = undefined :: Int
 
 
-
-
-
 -- | Fetch past Updates from FileLog for replication.
 getPastUpdates :: (Typeable st) => AcidState st -> IO [Tagged CSL.ByteString]
 getPastUpdates state = readEntriesFrom (localEvents $ downcast state) 0
 
+-- | Remove a Slave node from NodeStatus.
+removeFromNodeStatus :: MVar NodeStatus -> NodeIdentity -> IO ()
+removeFromNodeStatus nodeStatus ident =
+        modifyMVar_ nodeStatus $ return . M.delete ident
 
 -- | Update the NodeStatus after a node has replicated an Update.
 updateNodeStatus :: MVar NodeStatus -> E.Event -> NodeIdentity -> Int -> Int -> IO ()
@@ -128,13 +133,12 @@ connectNode :: Socket Router -> MVar NodeStatus -> NodeIdentity -> [Tagged CSL.B
 connectNode sock nodeStatus i oldUpdates = 
     modifyMVar_ nodeStatus $ \ns -> do
         forM_ (zip oldUpdates [0..]) $ \(u, r) -> do
-            sendUpdate sock r (encoded u) i
+            sendUpdate sock r (encode u) i
             (ident, msg) <- receiveFrame sock
             when (ident /= i) $ error "received message not from the new node"
             -- todo: also check increment validity
         return $ M.insert i rev ns 
     where  
-        encoded = undefined
         rev = length oldUpdates
 
 encodeUpdate :: (UpdateEvent e) => e -> ByteString
@@ -146,8 +150,6 @@ sendUpdate sock revision update ident = do
     send sock [SendMore] ident
     send sock [SendMore] CS.empty
     send sock [] $ encode $ DoRep revision update
-    where 
-        encoded = undefined -- encode Tag and BS of update
     
 
 -- | Receive one Frame. A Frame consists of three messages: 
@@ -216,6 +218,7 @@ scheduleMasterUpdate masterState event = do
     return res
     where revision = undefined
 
+-- | Send a new update to all Slaves.
 sendUpdateSlaves :: (SafeCopy e) => MasterState st -> Int -> e -> IO ()
 sendUpdateSlaves MasterState{..} revision event = withMVar nodeStatus $ \ns -> do
     let allSlaves = M.keys ns

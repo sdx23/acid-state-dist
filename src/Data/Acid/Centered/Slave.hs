@@ -81,14 +81,13 @@ enslaveState :: (IsAcidic st, Typeable st) =>
          -> st              -- ^ initial state
          -> IO (AcidState st)
 enslaveState address port initialState = do
-        debug "Opening enslaved state."
         -- local
         lst <- openLocalState initialState
         let levs = localEvents $ downcast lst
-        nlrev <- atomically $ readTVar $ logNextEntryId levs
-        let lrev = nlrev -1
+        lrev <- atomically $ readTVar $ logNextEntryId levs
         rev <- newMVar lrev
         -- remote
+        debug $ "Opening enslaved state at revision " ++ show lrev
         ctx <- context
         sock <- socket ctx Req
         let addr = "tcp://" ++ address ++ ":" ++ show port

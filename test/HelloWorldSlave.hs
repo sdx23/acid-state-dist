@@ -33,7 +33,7 @@ queryState = do HelloWorldState string <- ask
 $(makeAcidic ''HelloWorldState ['writeState, 'queryState])
 
 main :: IO ()
-main = do acid <- openMasterState 3333 (HelloWorldState "Hello world")
+main = do acid <- enslaveState "localhost"  3333 (HelloWorldState "Hello world")
           putStrLn "Possible commands: x for exit; q for query; uString for update;"
           forever $ do
               input <- getLine
@@ -46,7 +46,7 @@ main = do acid <- openMasterState 3333 (HelloWorldState "Hello world")
                     'q' -> do
                         string <- query acid QueryState
                         putStrLn $ "The state is: " ++ string
-                    'u' -> do
+                    'u'  -> do
                         update acid (WriteState (tail input))
                         putStrLn "The state has been modified!"
                     _   -> putStrLn $ "Unknown command " ++ input

@@ -70,6 +70,7 @@ library
                        bytestring,
                        containers,
                        transformers,
+                       stm,
                        mtl
   
   -- Directories containing source files.

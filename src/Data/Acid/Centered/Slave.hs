@@ -15,7 +15,6 @@
 
 --------------------------------------------------------------------------------
 -- SLAVE part
---todo: this should be seperate modules
 --
 -- What does a Slave do?
 --      open its localState
@@ -46,6 +45,7 @@ import Data.Acid
 import Data.Acid.Core
 import Data.Acid.Abstract
 import Data.Acid.Local
+import Data.Acid.Log
 
 import Data.Acid.Centered.Common
 
@@ -55,24 +55,20 @@ import System.ZMQ4 (Context, Socket, Req(..), Receiver, Flag(..),
                     send, receive)
 
 import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (MVar, newMVar, modifyMVar_)
 import Control.Monad (forever)
+import Control.Monad.STM (atomically)
+import Control.Concurrent.STM.TVar (readTVar)
 
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as CS
 import qualified Data.ByteString.Lazy.Char8 as CSL
 
-
 --------------------------------------------------------------------------------
--- TODO
---      overthink format of messages 
---          (extra packet for data? enough space in there?)
---      seperate modules
---      quit message
---      quit handler
---
 
 data SlaveState st 
     = SlaveState { slaveLocalState :: AcidState st
+                 , slaveRevision :: MVar NodeRevision
                  , slaveZmqContext :: Context
                  , slaveZmqAddr :: String
                  , slaveZmqSocket :: Socket Req
@@ -88,12 +84,16 @@ enslaveState address port initialState = do
         debug "opening enslaved state"
         -- local
         lst <- openLocalState initialState
+        let levs = localEvents $ downcast lst
+        lrev <- atomically $ readTVar $ logNextEntryId levs
+        rev <- newMVar lrev
         -- remote
         ctx <- context
         sock <- socket ctx Req
         let addr = "tcp://" ++ address ++ ":" ++ show port
         connect sock addr
         let slaveState = SlaveState { slaveLocalState = lst
+                                    , slaveRevision = rev
                                     , slaveZmqContext = ctx
                                     , slaveZmqAddr = addr
                                     , slaveZmqSocket = sock
@@ -101,6 +101,8 @@ enslaveState address port initialState = do
         forkIO $ slaveRepHandler slaveState 
         return $ slaveToAcidState slaveState 
 
+-- | Replication handler of the Slave. Forked and running in background all the
+--   time.
 slaveRepHandler :: SlaveState st -> IO ()
 slaveRepHandler SlaveState{..} = forever $ do
         msg <- receive slaveZmqSocket
@@ -108,21 +110,27 @@ slaveRepHandler SlaveState{..} = forever $ do
             Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show msg
             Right mmsg -> case mmsg of
                     -- We are sent an Update to replicate.
-                    DoRep r d -> replicateUpdate slaveZmqSocket r d slaveLocalState
+                    DoRep r d -> replicateUpdate slaveZmqSocket r d slaveLocalState slaveRevision
                     -- We are requested to Quit.
                     MasterQuit -> undefined -- todo: how get a State that wasn't closed closed?
                     -- no other messages possible
                     _ -> error $ "Unknown message received: " ++ show mmsg
 
-replicateUpdate :: Socket Req -> Int -> ByteString -> AcidState st -> IO ()
-replicateUpdate sock rev event lst = do
-        debug "Got an Update to replicate."
-        -- commit it locally 
-        scheduleColdUpdate lst $ decodeEvent event
-        -- send reply: we're done
-        sendToMaster sock $ RepDone revision
-        where revision = undefined
-              decodeEvent ev = case runGet safeGet ev of
+replicateUpdate :: Socket Req -> Int -> ByteString -> AcidState st -> MVar NodeRevision -> IO ()
+replicateUpdate sock rev event lst nrev = do
+        debug $ "Got an Update to replicate " ++ show rev
+        modifyMVar_ nrev $ \nr -> case rev - 1 of
+            nr -> do
+                -- commit it locally 
+                scheduleColdUpdate lst $ decodeEvent event
+                -- send reply: we're done
+                sendToMaster sock $ RepDone rev
+                return rev
+            _  -> do 
+                sendToMaster sock RepError
+                error $ "Replication failed at revision " ++ show rev ++ " -> " ++ show nr
+                return nr
+            where decodeEvent ev = case runGet safeGet ev of
                                 Left str -> error str
                                 Right val -> val
     

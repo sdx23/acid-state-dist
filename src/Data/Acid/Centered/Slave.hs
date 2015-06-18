@@ -81,17 +81,19 @@ enslaveState :: (IsAcidic st, Typeable st) =>
          -> st              -- ^ initial state
          -> IO (AcidState st)
 enslaveState address port initialState = do
-        debug "opening enslaved state"
+        debug "Opening enslaved state."
         -- local
         lst <- openLocalState initialState
         let levs = localEvents $ downcast lst
-        lrev <- atomically $ readTVar $ logNextEntryId levs
+        nlrev <- atomically $ readTVar $ logNextEntryId levs
+        let lrev = nlrev -1
         rev <- newMVar lrev
         -- remote
         ctx <- context
         sock <- socket ctx Req
         let addr = "tcp://" ++ address ++ ":" ++ show port
         connect sock addr
+        sendToMaster sock $ NewSlave lrev
         let slaveState = SlaveState { slaveLocalState = lst
                                     , slaveRevision = rev
                                     , slaveZmqContext = ctx
@@ -116,13 +118,13 @@ slaveRepHandler SlaveState{..} = forever $ do
                     -- no other messages possible
                     _ -> error $ "Unknown message received: " ++ show mmsg
 
-replicateUpdate :: Socket Req -> Int -> ByteString -> AcidState st -> MVar NodeRevision -> IO ()
+replicateUpdate :: Socket Req -> Int -> Tagged CSL.ByteString -> AcidState st -> MVar NodeRevision -> IO ()
 replicateUpdate sock rev event lst nrev = do
         debug $ "Got an Update to replicate " ++ show rev
         modifyMVar_ nrev $ \nr -> case rev - 1 of
             nr -> do
                 -- commit it locally 
-                scheduleColdUpdate lst $ decodeEvent event
+                scheduleColdUpdate lst event
                 -- send reply: we're done
                 sendToMaster sock $ RepDone rev
                 return rev

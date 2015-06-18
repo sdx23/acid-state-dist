@@ -20,10 +20,11 @@ module Data.Acid.Centered.Common
     , MasterMessage(..)
     ) where
 
---import Data.Acid.Core (Tagged(..))
+import Data.Acid.Core (Tagged(..))
 
 import Control.Monad (liftM, liftM2)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Lazy.Char8 as CSL
 import Data.Serialize (Serialize(..), put, get,
                        putWord8, getWord8,
                       )
@@ -35,7 +36,7 @@ type NodeRevision = Int
 debug :: String -> IO ()
 debug = putStrLn 
 
-data MasterMessage = DoRep Int ByteString
+data MasterMessage = DoRep Int (Tagged CSL.ByteString)
                    | MasterQuit
                   deriving (Show)
 

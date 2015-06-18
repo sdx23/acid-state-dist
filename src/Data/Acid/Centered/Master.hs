@@ -138,7 +138,7 @@ connectNode :: Socket Router -> MVar NodeStatus -> NodeIdentity -> [Tagged CSL.B
 connectNode sock nodeStatus i oldUpdates = 
     modifyMVar_ nodeStatus $ \ns -> do
         forM_ (zip oldUpdates [0..]) $ \(u, r) -> do
-            sendUpdate sock r (encode u) i
+            sendUpdate sock r u i
             (ident, msg) <- receiveFrame sock
             when (ident /= i) $ error "received message not from the new node"
             -- todo: also check increment validity
@@ -149,7 +149,7 @@ encodeUpdate :: (UpdateEvent e) => e -> ByteString
 encodeUpdate event = runPut (safePut event)
 
 -- | Send one (encoded) Update to a Slave.
-sendUpdate :: Socket Router -> Int -> ByteString -> NodeIdentity -> IO ()
+sendUpdate :: Socket Router -> Int -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
 sendUpdate sock revision update ident = do
     send sock [SendMore] ident
     send sock [SendMore] CS.empty
@@ -228,12 +228,12 @@ scheduleMasterUpdate masterState event = do
         return res
 
 -- | Send a new update to all Slaves.
-sendUpdateSlaves :: (SafeCopy e) => MasterState st -> Int -> e -> IO ()
+sendUpdateSlaves :: (UpdateEvent e) => MasterState st -> Int -> e -> IO ()
 sendUpdateSlaves MasterState{..} revision event = withMVar nodeStatus $ \ns -> do
     let allSlaves = M.keys ns
-    let encoded = runPut (safePut event)
+    let encoded = runPutLazy (safePut event)
     forM_ allSlaves $ \i ->
-        sendUpdate zmqSocket revision encoded i
+        sendUpdate zmqSocket revision (methodTag event, encoded) i
 
 
 toAcidState :: IsAcidic st => MasterState st -> AcidState st

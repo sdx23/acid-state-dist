@@ -41,7 +41,7 @@ import Data.Serialize (Serialize(..), put, get,
 import Data.Acid.Centered.Common
 
 import Control.Concurrent (forkIO)
-import Control.Monad (forever, when, forM_, liftM, liftM2)
+import Control.Monad (forever, when, unless, forM_, liftM, liftM2)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
 import qualified Control.Concurrent.Event as E
@@ -223,8 +223,18 @@ scheduleMasterUpdate masterState event = do
         E.clear $ repDone masterState
         sendUpdateSlaves masterState event
         -- wait for Slaves finish replication
-        E.wait $ repDone masterState
+        noTimeout <- E.waitTimeout (repDone masterState) (500*1000)
+        unless noTimeout $ do
+            debug "Timeout occurred."
+            E.set (repDone masterState)
+            removeLaggingNodes masterState
         return res
+
+-- | Remove nodes that were not responsive
+removeLaggingNodes :: MasterState st -> IO ()
+removeLaggingNodes MasterState{..} = 
+    withMVar masterRevision $ \mr -> modifyMVar_ nodeStatus $ return . M.filter (== mr) 
+
 
 -- | Send a new update to all Slaves.
 sendUpdateSlaves :: (UpdateEvent e) => MasterState st -> e -> IO ()

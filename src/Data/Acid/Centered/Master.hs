@@ -42,6 +42,8 @@ import Data.Acid.Centered.Common
 
 import Control.Concurrent (forkIO)
 import Control.Monad (forever, when, forM_, liftM, liftM2)
+import Control.Monad.STM (atomically)
+import Control.Concurrent.STM.TVar (readTVar)
 import qualified Control.Concurrent.Event as E
 
 import System.ZMQ4 (Context, Socket, Router(..), Receiver, Flag(..),
@@ -58,9 +60,12 @@ import Data.ByteString.Char8 (ByteString)
 -- auto imports following - need to be cleaned up
 import Control.Concurrent.MVar(MVar, modifyMVar, modifyMVar_, withMVar, newMVar)
 
+--------------------------------------------------------------------------------
+
 data MasterState st 
     = MasterState { localState :: AcidState st
                   , nodeStatus :: MVar NodeStatus
+                  , masterRevision :: MVar NodeRevision
                   , repDone :: E.Event
                   , zmqContext :: Context
                   , zmqAddr :: String
@@ -68,14 +73,14 @@ data MasterState st
                   } deriving (Typeable)
 
 type NodeIdentity = ByteString
-type NodeStatus = Map NodeIdentity Int
+type NodeStatus = Map NodeIdentity NodeRevision
         
 -- | The replication handler on master node. Does
 --      o handle receiving requests from nodes,
 --      o answering as needed (old updates),
 --      o bookkeeping on node states. 
 masterRepHandler :: (Typeable st) => MasterState st -> IO ()
-masterRepHandler MasterState{..} = do
+masterRepHandler masterState@MasterState{..} = do
         let loop = do
                 -- take one frame
                 (ident, msg) <- receiveFrame zmqSocket
@@ -84,10 +89,10 @@ masterRepHandler MasterState{..} = do
                     -- New Slave joined.
                     NewSlave r -> do
                         -- todo: the state should be locked at this point to avoid losses(?)
-                        oldUpdates <- getPastUpdates localState
-                        connectNode zmqSocket nodeStatus ident oldUpdates
+                        pastUpdates <- getPastUpdates localState
+                        connectNode zmqSocket nodeStatus ident pastUpdates
                     -- Slave is done replicating.
-                    RepDone r -> updateNodeStatus nodeStatus repDone ident r cr
+                    RepDone r -> updateNodeStatus masterState ident r
                     -- Slave sends an Udate.
                     -- todo: not yet
                     -- Slave quits.
@@ -98,7 +103,6 @@ masterRepHandler MasterState{..} = do
                 debug "loop iteration"
                 loop
         loop
-        where cr = undefined :: Int
 
 
 -- | Fetch past Updates from FileLog for replication.
@@ -111,19 +115,20 @@ removeFromNodeStatus nodeStatus ident =
         modifyMVar_ nodeStatus $ return . M.delete ident
 
 -- | Update the NodeStatus after a node has replicated an Update.
-updateNodeStatus :: MVar NodeStatus -> E.Event -> NodeIdentity -> Int -> Int -> IO ()
-updateNodeStatus nodeStatus rDone ident r cr = 
-    modifyMVar_ nodeStatus $ \ns -> do
-        -- todo: there should be a fancy way to do this
-        --when (M.findWithDefault 0 ident ns /= (cr - 1)) $ error "Invalid increment of node status."
-        -- todo: checks sensible?
-        let rs = M.adjust (+1) ident ns
-        when (allNodesDone rs) $ do
-            E.set rDone
-            debug $ "all nodes done with " ++ show cr
-        return rs
-        where 
-            allNodesDone = M.fold (\v t -> (v == cr) && t) True
+updateNodeStatus :: MasterState st -> NodeIdentity -> Int -> IO ()
+updateNodeStatus MasterState{..} ident r = 
+    modifyMVar_ nodeStatus $ \ns -> 
+        withMVar masterRevision $ \mr -> do
+            -- todo: there should be a fancy way to do this
+            when (M.findWithDefault 0 ident ns /= (mr - 1)) $
+                error $ "Invalid increment of node status " ++ show ns ++ " -> " ++ show mr
+            -- todo: checks sensible?
+            let rs = M.adjust (+1) ident ns
+            when (allNodesDone mr rs) $ do
+                E.set repDone
+                debug $ "All nodes done replicating " ++ show mr
+            return rs
+            where allNodesDone mrev = M.fold (\v t -> (v == mrev) && t) True
 
 -- | Connect a new Slave by getting it up-to-date,
 --   i.e. send all past events as Updates.
@@ -138,8 +143,7 @@ connectNode sock nodeStatus i oldUpdates =
             when (ident /= i) $ error "received message not from the new node"
             -- todo: also check increment validity
         return $ M.insert i rev ns 
-    where  
-        rev = length oldUpdates
+    where rev = length oldUpdates
 
 encodeUpdate :: (UpdateEvent e) => e -> ByteString
 encodeUpdate event = runPut (safePut event)
@@ -174,6 +178,9 @@ openMasterState port initialState = do
         debug "opening master state"
         -- local
         lst <- openLocalState initialState
+        let levs = localEvents $ downcast lst
+        lrev <- atomically $ readTVar $ logNextEntryId levs
+        rev <- newMVar lrev
         -- remote
         ctx <- context
         sock <- socket ctx Router
@@ -183,6 +190,7 @@ openMasterState port initialState = do
         bind sock addr
         let masterState = MasterState { localState = lst
                                       , nodeStatus = ns
+                                      , masterRevision = rev
                                       , repDone = rd
                                       , zmqContext = ctx
                                       , zmqAddr = addr
@@ -208,22 +216,24 @@ closeMasterState MasterState{..} = do
 -- todo: this implementation is only valid for Slaves not sending Updates.
 scheduleMasterUpdate :: UpdateEvent event => MasterState (EventState event) -> event -> IO (MVar (EventResult event))
 scheduleMasterUpdate masterState event = do
-    -- do local Update
-    res <- scheduleUpdate (localState masterState) event
-    -- sent Update to Slaves
-    E.clear $ repDone masterState
-    sendUpdateSlaves masterState revision event
-    -- wait for Slaves finish replication
-    E.wait $ repDone masterState
-    return res
-    where revision = undefined
+        -- do local Update
+        res <- scheduleUpdate (localState masterState) event
+        modifyMVar_ (masterRevision masterState) $ \mr -> do
+            -- sent Update to Slaves
+            E.clear $ repDone masterState
+            sendUpdateSlaves masterState (mr + 1) event
+            return (mr + 1)
+        -- wait for Slaves finish replication
+        E.wait $ repDone masterState
+        return res
 
 -- | Send a new update to all Slaves.
 sendUpdateSlaves :: (SafeCopy e) => MasterState st -> Int -> e -> IO ()
 sendUpdateSlaves MasterState{..} revision event = withMVar nodeStatus $ \ns -> do
     let allSlaves = M.keys ns
     let encoded = runPut (safePut event)
-    forM_ allSlaves $ \i -> sendUpdate zmqSocket revision encoded i
+    forM_ allSlaves $ \i ->
+        sendUpdate zmqSocket revision encoded i
 
 
 toAcidState :: IsAcidic st => MasterState st -> AcidState st

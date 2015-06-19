@@ -149,7 +149,6 @@ connectNode MasterState{..} i pastUpdates =
 sendUpdate :: Socket Router -> Int -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
 sendUpdate sock revision update ident = do
     send sock [SendMore] ident
-    send sock [SendMore] CS.empty
     send sock [] $ encode $ DoRep revision update
     
 
@@ -158,7 +157,6 @@ sendUpdate sock revision update ident = do
 receiveFrame :: (Receiver t) => Socket t -> IO (NodeIdentity, SlaveMessage)
 receiveFrame sock = do
     ident <- receive sock
-    _     <- receive sock
     msg   <- receive sock
     case decode msg of
         -- todo: pass on exceptions

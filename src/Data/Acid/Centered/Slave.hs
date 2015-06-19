@@ -49,7 +49,7 @@ import Data.Acid.Log
 
 import Data.Acid.Centered.Common
 
-import System.ZMQ4 (Context, Socket, Req(..), Receiver, Flag(..),
+import System.ZMQ4 (Context, Socket, Dealer(..), Receiver, Flag(..),
                     context, term, socket, close, 
                     connect, disconnect,
                     send, receive)
@@ -71,7 +71,7 @@ data SlaveState st
                  , slaveRevision :: MVar NodeRevision
                  , slaveZmqContext :: Context
                  , slaveZmqAddr :: String
-                 , slaveZmqSocket :: Socket Req
+                 , slaveZmqSocket :: Socket Dealer
                  } deriving (Typeable)
 
 -- | Open a local State as Slave for a Master.
@@ -89,7 +89,7 @@ enslaveState address port initialState = do
         -- remote
         debug $ "Opening enslaved state at revision " ++ show lrev
         ctx <- context
-        sock <- socket ctx Req
+        sock <- socket ctx Dealer
         let addr = "tcp://" ++ address ++ ":" ++ show port
         connect sock addr
         sendToMaster sock $ NewSlave lrev
@@ -117,7 +117,7 @@ slaveRepHandler SlaveState{..} = forever $ do
                     -- no other messages possible
                     _ -> error $ "Unknown message received: " ++ show mmsg
 
-replicateUpdate :: Socket Req -> Int -> Tagged CSL.ByteString -> AcidState st -> MVar NodeRevision -> IO ()
+replicateUpdate :: Socket Dealer -> Int -> Tagged CSL.ByteString -> AcidState st -> MVar NodeRevision -> IO ()
 replicateUpdate sock rev event lst nrev = do
         debug $ "Got an Update to replicate " ++ show rev
         modifyMVar_ nrev $ \nr -> case rev - 1 of
@@ -136,7 +136,7 @@ replicateUpdate sock rev event lst nrev = do
                                 Right val -> val
     
 -- | Send a message to Master.
-sendToMaster :: Socket Req -> SlaveMessage -> IO ()
+sendToMaster :: Socket Dealer -> SlaveMessage -> IO ()
 sendToMaster sock smsg = send sock [] $ encode smsg
 
 -- | Close an enslaved State.

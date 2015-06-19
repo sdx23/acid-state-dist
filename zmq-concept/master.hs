@@ -69,14 +69,14 @@ incRevNode ns i r = modifyIORef ns (Map.adjust (const r) i)
 receiveReply :: Receiver t => Socket t -> IO (CS.ByteString, CS.ByteString)
 receiveReply sock = do
     ident <- receive sock 
-    _ <- receive sock 
     msg <- receive sock 
+    print ident
+    print msg
     return (ident, msg)
 
 sendUpdate :: Sender t => Socket t -> CS.ByteString -> Int -> IO ()
 sendUpdate sock ident num = do
     send sock [SendMore] ident
-    send sock [SendMore] ""
     send sock [] $ CS.cons 'U' (CS.pack (show (num :: Int)))
 
 msgToRev :: CS.ByteString -> Int

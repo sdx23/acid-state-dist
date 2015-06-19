@@ -14,7 +14,7 @@ main :: IO ()
 main = do
     myRev <- newIORef 0
     runZMQ $ do
-        sock <- socket Req
+        sock <- socket Dealer
         connect sock addr
         send sock [] "S"
         forever $ do

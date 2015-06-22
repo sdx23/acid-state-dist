@@ -37,16 +37,15 @@ main = do acid <- enslaveState "localhost"  3333 (HelloWorldState "Hello world")
           putStrLn "Possible commands: x for exit; q for query; uString for update;"
           forever $ do
               input <- getLine
-              let cmd = head input
-              case cmd of
-                    'x' -> do
+              case input of
+                    ('x':_) -> do
                         putStrLn "Bye!"
                         closeAcidState acid
                         exitSuccess
-                    'q' -> do
+                    ('q':_) -> do
                         string <- query acid QueryState
                         putStrLn $ "The state is: " ++ string
-                    'u'  -> do
-                        update acid (WriteState (tail input))
+                    ('u':str) -> do
+                        update acid (WriteState str)
                         putStrLn "The state has been modified!"
                     _   -> putStrLn $ "Unknown command " ++ input

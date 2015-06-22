@@ -55,10 +55,18 @@ import System.ZMQ4 (Context, Socket, Dealer(..), Receiver, Flag(..),
                     send, receive)
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.MVar (MVar, newMVar, modifyMVar_)
-import Control.Monad (forever)
+import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar, 
+                                modifyMVar, modifyMVar_,
+                                takeMVar, putMVar)
+import Control.Monad (forever, void)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
+import Control.Concurrent.Event (Event)
+import qualified Control.Concurrent.Event as Event
+
+import Data.Map (Map)
+import qualified Data.Map as M
+import Data.Maybe (fromMaybe)
 
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as CS
@@ -69,10 +77,13 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 data SlaveState st 
     = SlaveState { slaveLocalState :: AcidState st
                  , slaveRevision :: MVar NodeRevision
+                 , slaveRequests :: MVar SlaveRequests
                  , slaveZmqContext :: Context
                  , slaveZmqAddr :: String
                  , slaveZmqSocket :: Socket Dealer
                  } deriving (Typeable)
+
+type SlaveRequests = Map RequestID (IO ())
 
 -- | Open a local State as Slave for a Master.
 enslaveState :: (IsAcidic st, Typeable st) =>
@@ -90,11 +101,13 @@ enslaveState address port initialState = do
         debug $ "Opening enslaved state at revision " ++ show lrev
         ctx <- context
         sock <- socket ctx Dealer
+        srs <- newMVar M.empty
         let addr = "tcp://" ++ address ++ ":" ++ show port
         connect sock addr
         sendToMaster sock $ NewSlave lrev
         let slaveState = SlaveState { slaveLocalState = lst
                                     , slaveRevision = rev
+                                    , slaveRequests = srs
                                     , slaveZmqContext = ctx
                                     , slaveZmqAddr = addr
                                     , slaveZmqSocket = sock
@@ -105,35 +118,72 @@ enslaveState address port initialState = do
 -- | Replication handler of the Slave. Forked and running in background all the
 --   time.
 slaveRepHandler :: SlaveState st -> IO ()
-slaveRepHandler SlaveState{..} = forever $ do
+slaveRepHandler slaveState@SlaveState{..} = forever $ do
         msg <- receive slaveZmqSocket
         case decode msg of
             Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show msg
             Right mmsg -> case mmsg of
                     -- We are sent an Update to replicate.
-                    DoRep r d -> replicateUpdate slaveZmqSocket r d slaveLocalState slaveRevision
+                    DoRep r i d -> replicateUpdate slaveState r i d slaveLocalState slaveRevision
+                    -- We are sent an Update to replicate for synchronization.
+                    DoSyncRep r d -> replicateSyncUpdate slaveZmqSocket r d slaveLocalState slaveRevision
                     -- We are requested to Quit.
                     MasterQuit -> undefined -- todo: how get a State that wasn't closed closed?
                     -- no other messages possible
                     _ -> error $ "Unknown message received: " ++ show mmsg
 
-replicateUpdate :: Socket Dealer -> Int -> Tagged CSL.ByteString -> AcidState st -> MVar NodeRevision -> IO ()
-replicateUpdate sock rev event lst nrev = do
+-- | Replicate an Update as requested by Master.
+--   Updates that were requested by this Slave we run locally and put the result
+--   into the MVar in SlaveRequests.
+--   Other Updates are just replicated without using the result.
+replicateUpdate :: SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> AcidState st -> MVar NodeRevision -> IO ()
+replicateUpdate SlaveState{..} rev reqId event lst nrev = do
         debug $ "Got an Update to replicate " ++ show rev
         modifyMVar_ nrev $ \nr -> case rev - 1 of
             nr -> do
-                -- commit it locally 
-                scheduleColdUpdate lst event
+                -- commit / run it locally 
+                case reqId of
+                    Nothing -> 
+                        void $ scheduleColdUpdate lst event 
+                    Just rid -> modifyMVar slaveRequests $ \srs -> do
+                        debug $ "This is the Update for Request " ++ show rid
+                        callback <- fromMaybe (error $ "Callback not found: " ++ show rid) (M.lookup rid srs) 
+                        let nsrs = M.adjust (\c -> return ()) rid srs
+                        return (nsrs, callback) 
                 -- send reply: we're done
-                sendToMaster sock $ RepDone rev
+                sendToMaster slaveZmqSocket $ RepDone rev
                 return rev
             _  -> do 
-                sendToMaster sock RepError
+                sendToMaster slaveZmqSocket RepError
                 error $ "Replication failed at revision " ++ show rev ++ " -> " ++ show nr
                 return nr
             where decodeEvent ev = case runGet safeGet ev of
                                 Left str -> error str
                                 Right val -> val
+
+replicateSyncUpdate = undefined
+
+-- | Slave Updates
+--
+-- | Update on slave site. 
+--      The steps are:  
+--      - Request Update from Master
+--      - Master issues Update with same RequestID
+--      - repHandler replicates and puts result in MVar
+-- todo: this intereferes with Master Updates!
+scheduleSlaveUpdate :: UpdateEvent e => SlaveState (EventState e) -> e -> IO (MVar (EventResult e))
+scheduleSlaveUpdate SlaveState{..} event = do
+        debug "Update by Slave."
+        result <- newEmptyMVar
+        modifyMVar_ slaveRequests $ \srs -> do
+            let encoded = runPutLazy (safePut event)
+            let reqId = if M.null srs then 0 else (+1) $ fst $ M.findMax srs
+            sendToMaster slaveZmqSocket $ ReqUpdate reqId (methodTag event, encoded)
+            -- todo: this could be more efficient
+            let callback = putMVar result =<< takeMVar =<< scheduleUpdate slaveLocalState event 
+            return $ M.insert reqId callback srs
+        return result
+
     
 -- | Send a message to Master.
 sendToMaster :: Socket Dealer -> SlaveMessage -> IO ()
@@ -154,13 +204,13 @@ liberateState SlaveState{..} = do
 
 
 slaveToAcidState :: IsAcidic st => SlaveState st -> AcidState st
-slaveToAcidState slave 
-  = AcidState { _scheduleUpdate    = undefined
+slaveToAcidState slaveState 
+  = AcidState { _scheduleUpdate    = scheduleSlaveUpdate slaveState 
               , scheduleColdUpdate = undefined
-              , _query             = query $ slaveLocalState slave
-              , queryCold          = queryCold $ slaveLocalState slave
+              , _query             = query $ slaveLocalState slaveState
+              , queryCold          = queryCold $ slaveLocalState slaveState
               , createCheckpoint   = undefined
               , createArchive      = undefined
-              , closeAcidState     = liberateState slave 
-              , acidSubState       = mkAnyState slave
+              , closeAcidState     = liberateState slaveState 
+              , acidSubState       = mkAnyState slaveState
               }

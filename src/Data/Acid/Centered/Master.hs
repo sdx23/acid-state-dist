@@ -94,7 +94,8 @@ masterRepHandler masterState@MasterState{..} = do
                     -- Slave is done replicating.
                     RepDone r -> updateNodeStatus masterState ident r
                     -- Slave sends an Udate.
-                    -- todo: not yet
+                    ReqUpdate rid event ->
+                        sendUpdateSlaves masterState (rid, ident) event
                     -- Slave quits.
                     SlaveQuit -> removeFromNodeStatus nodeStatus ident
                     -- no other messages possible
@@ -139,17 +140,17 @@ connectNode MasterState{..} i pastUpdates =
     withMVar masterRevision $ \mr -> 
         modifyMVar_ nodeStatus $ \ns -> do
             forM_ pastUpdates $ \(r, u) -> do
-                sendUpdate zmqSocket r u i
+                sendUpdate zmqSocket r Nothing u i
                 (ident, msg) <- receiveFrame zmqSocket
                 when (ident /= i) $ error "received message not from the new node"
                 -- todo: also check increment validity
             return $ M.insert i mr ns 
 
 -- | Send one (encoded) Update to a Slave.
-sendUpdate :: Socket Router -> Int -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
-sendUpdate sock revision update ident = do
+sendUpdate :: Socket Router -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
+sendUpdate sock revision reqId update ident = do
     send sock [SendMore] ident
-    send sock [] $ encode $ DoRep revision update
+    send sock [] $ encode $ DoRep revision reqId update
     
 
 -- | Receive one Frame. A Frame consists of three messages: 
@@ -219,7 +220,7 @@ scheduleMasterUpdate masterState event = do
         modifyMVar_ (masterRevision masterState) (return . (+1))
         -- sent Update to Slaves
         E.clear $ repDone masterState
-        sendUpdateSlaves masterState event
+        sendUpdateSlavesOld masterState event
         -- wait for Slaves finish replication
         noTimeout <- E.waitTimeout (repDone masterState) (500*1000)
         unless noTimeout $ do
@@ -235,8 +236,28 @@ removeLaggingNodes MasterState{..} =
 
 
 -- | Send a new update to all Slaves.
-sendUpdateSlaves :: (UpdateEvent e) => MasterState st -> e -> IO ()
-sendUpdateSlaves MasterState{..} event = withMVar nodeStatus $ \ns -> do
+                        -- todo: these two as one type _
+sendUpdateSlaves :: MasterState st -> (RequestID, NodeIdentity) -> Tagged CSL.ByteString -> IO ()
+sendUpdateSlaves MasterState{..} (reqID, reqIdent) event = withMVar nodeStatus $ \ns -> do
+    let noReqSlaves = filter (/= reqIdent) $ M.keys ns 
+    let numSlaves = (+1) $ length noReqSlaves 
+    debug $ "Sending Update to Slaves, there are " ++ show numSlaves
+    modifyMVar_ masterRevision $ \mr -> do
+        let mrn = mr + 1
+        debug $ "Replicating Update myself to " ++ show mrn
+        scheduleColdUpdate localState event
+        debug $ "Sending Updates to rev " ++ show mrn
+        -- todo: check it's not sent (or better: requested) twice
+        sendUpdate zmqSocket mr (Just reqID) event reqIdent
+        forM_ noReqSlaves $ \i ->
+            sendUpdate zmqSocket mrn Nothing event i
+        return mrn
+    -- if there are no Slaves, replication is already done
+    when (numSlaves == 0) $ E.set repDone
+
+-- | Send a new update to all Slaves.
+sendUpdateSlavesOld :: (UpdateEvent e) => MasterState st -> e -> IO ()
+sendUpdateSlavesOld MasterState{..} event = withMVar nodeStatus $ \ns -> do
     let allSlaves = M.keys ns
     let numSlaves = length allSlaves
     debug $ "Sending Update to Slaves, there are " ++ show numSlaves
@@ -244,7 +265,7 @@ sendUpdateSlaves MasterState{..} event = withMVar nodeStatus $ \ns -> do
     withMVar masterRevision $ \mr -> do
         debug $ "Sending Updates to rev " ++ show mr
         forM_ allSlaves $ \i ->
-            sendUpdate zmqSocket mr (methodTag event, encoded) i
+            sendUpdate zmqSocket mr Nothing (methodTag event, encoded) i
     -- if there are no Slaves, replication is already done
     when (numSlaves == 0) $ E.set repDone
 

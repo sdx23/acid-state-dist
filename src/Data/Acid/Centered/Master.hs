@@ -142,18 +142,23 @@ connectNode :: MasterState st -> NodeIdentity -> [(Int, Tagged CSL.ByteString)] 
 connectNode MasterState{..} i pastUpdates = 
     withMVar masterRevision $ \mr -> 
         modifyMVar_ nodeStatus $ \ns -> do
-            forM_ pastUpdates $ \(r, u) -> do
-                sendUpdate zmqSocket r Nothing u i
-                (ident, msg) <- receiveFrame zmqSocket
-                when (ident /= i) $ error "received message not from the new node"
-                -- todo: also check increment validity
+            forM_ pastUpdates $ \(r, u) -> sendSyncUpdate zmqSocket r u i
+            sendToSlave zmqSocket SyncDone i
             return $ M.insert i mr ns 
 
+-- | Send a message to a Slave
+sendToSlave :: Socket Router -> MasterMessage -> NodeIdentity -> IO ()
+sendToSlave sock msg ident = do
+    send sock [SendMore] ident
+    send sock [] $ encode msg
+
+-- | Send one (encoded) Update to a Slave.
+sendSyncUpdate :: Socket Router -> Revision -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
+sendSyncUpdate sock revision update = sendToSlave sock (DoSyncRep revision update) 
+    
 -- | Send one (encoded) Update to a Slave.
 sendUpdate :: Socket Router -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
-sendUpdate sock revision reqId update ident = do
-    send sock [SendMore] ident
-    send sock [] $ encode $ DoRep revision reqId update
+sendUpdate sock revision reqId update = sendToSlave sock (DoRep revision reqId update) 
     
 -- | Receive one Frame. A Frame consists of three messages: 
 --      sender ID, empty message, and actual content 

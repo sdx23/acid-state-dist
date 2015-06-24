@@ -124,9 +124,9 @@ slaveRepHandler slaveState@SlaveState{..} = forever $ do
             Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show msg
             Right mmsg -> case mmsg of
                     -- We are sent an Update to replicate.
-                    DoRep r i d -> replicateUpdate slaveState r i d slaveLocalState slaveRevision
+                    DoRep r i d -> replicateUpdate slaveState r i d 
                     -- We are sent an Update to replicate for synchronization.
-                    DoSyncRep r d -> replicateSyncUpdate slaveZmqSocket r d slaveLocalState slaveRevision
+                    DoSyncRep r d -> replicateSyncUpdate slaveState r d 
                     -- We are requested to Quit.
                     MasterQuit -> undefined -- todo: how get a State that wasn't closed closed?
                     -- no other messages possible
@@ -136,15 +136,15 @@ slaveRepHandler slaveState@SlaveState{..} = forever $ do
 --   Updates that were requested by this Slave we run locally and put the result
 --   into the MVar in SlaveRequests.
 --   Other Updates are just replicated without using the result.
-replicateUpdate :: SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> AcidState st -> MVar NodeRevision -> IO ()
-replicateUpdate SlaveState{..} rev reqId event lst nrev = do
+replicateUpdate :: SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> IO ()
+replicateUpdate SlaveState{..} rev reqId event = do
         debug $ "Got an Update to replicate " ++ show rev
-        modifyMVar_ nrev $ \nr -> case rev - 1 of
+        modifyMVar_ slaveRevision $ \nr -> case rev - 1 of
             nr -> do
                 -- commit / run it locally 
                 case reqId of
                     Nothing -> 
-                        void $ scheduleColdUpdate lst event 
+                        void $ scheduleColdUpdate slaveLocalState event 
                     Just rid -> modifyMVar slaveRequests $ \srs -> do
                         debug $ "This is the Update for Request " ++ show rid
                         callback <- fromMaybe (error $ "Callback not found: " ++ show rid) (M.lookup rid srs) 

@@ -122,15 +122,15 @@ removeFromNodeStatus nodeStatus ident =
 -- | Update the NodeStatus after a node has replicated an Update.
 updateNodeStatus :: MasterState st -> NodeIdentity -> Int -> IO ()
 updateNodeStatus MasterState{..} ident r = 
-    modifyMVar_ nodeStatus $ \ns -> 
-        withMVar masterRevision $ \mr -> do
-            -- todo: there should be a fancy way to do this
-            when (M.findWithDefault 0 ident ns /= (mr - 1)) $
-                error $ "Invalid increment of node status " ++ show ns ++ " -> " ++ show mr
-            let rs = M.adjust (+1) ident ns
-            when (allNodesDone mr rs) $ debug $ "All nodes done replicating " ++ show mr
-            return rs
-            where allNodesDone mrev = M.fold (\v t -> (v == mrev) && t) True
+    modifyMVar_ nodeStatus $ \ns -> do
+        -- todo: there should be a fancy way to do this
+        when (M.findWithDefault 0 ident ns /= (r - 1)) $
+            error $ "Invalid increment of node status " ++ show ns ++ " -> " ++ show r
+        let rs = M.adjust (+1) ident ns
+        return rs
+        --withMVar masterRevision $ \mr -> do
+        --    when (allNodesDone mr rs) $ debug $ "All nodes done replicating " ++ show mr
+        --    where allNodesDone mrev = M.fold (\v t -> (v == mrev) && t) True
 
 -- | Connect a new Slave by getting it up-to-date,
 --   i.e. send all past events as Updates. This is fire&forget.

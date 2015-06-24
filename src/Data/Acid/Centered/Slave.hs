@@ -19,7 +19,8 @@
 -- What does a Slave do?
 --      open its localState
 --      check at which revision it is
---      request to be updated
+--      request to be updated -> sync happens
+--      whilst syncing normal updates accumulate in RepChan
 --
 --      do Queries locally
 --      deny Updates (for now)
@@ -88,7 +89,10 @@ data SlaveState st
                  , slaveZmqSocket :: Socket Dealer
                  } deriving (Typeable)
 
+-- | Memory of own Requests sent to Master.
 type SlaveRequests = Map RequestID (IO ())
+
+-- | One Update + Metainformation to replicate.
 type SlaveRepItem = (Revision, Maybe RequestID, Tagged CSL.ByteString)
 
 -- | Open a local State as Slave for a Master.
@@ -126,8 +130,7 @@ enslaveState address port initialState = do
         forkIO $ slaveReplicationHandler slaveState 
         return $ slaveToAcidState slaveState 
 
--- | Replication handler of the Slave. Forked and running in background all the
---   time.
+-- | Replication handler of the Slave. 
 slaveRequestHandler :: SlaveState st -> IO ()
 slaveRequestHandler slaveState@SlaveState{..} = forever $ do
         msg <- receive slaveZmqSocket
@@ -138,7 +141,7 @@ slaveRequestHandler slaveState@SlaveState{..} = forever $ do
                     DoRep r i d -> queueUpdate slaveState (r, i, d)
                     -- We are sent an Update to replicate for synchronization.
                     DoSyncRep r d -> replicateSyncUpdate slaveState r d 
-                    -- Master done sending all Sync Updates 
+                    -- Master done sending all synchronization Updates.
                     SyncDone -> debug "Sync Done." >> Event.set slaveSyncDone
                     -- We are requested to Quit.
                     MasterQuit -> undefined -- todo: how get a State that wasn't closed closed?
@@ -163,8 +166,8 @@ slaveReplicationHandler slaveState@SlaveState{..} = do
 replicateSyncUpdate slaveState rev event = replicateUpdate slaveState (rev, Nothing, event) True
 
 -- | Replicate an Update as requested by Master.
---   Updates that were requested by this Slave we run locally and put the result
---   into the MVar in SlaveRequests.
+--   Updates that were requested by this Slave are run locally and the result
+--   put into the MVar in SlaveRequests.
 --   Other Updates are just replicated without using the result.
 replicateUpdate :: SlaveState st -> SlaveRepItem -> Bool -> IO ()
 replicateUpdate SlaveState{..} (rev, reqId, event) syncing = do
@@ -191,14 +194,11 @@ replicateUpdate SlaveState{..} (rev, reqId, event) syncing = do
                                 Left str -> error str
                                 Right val -> val
 
--- | Slave Updates
---
 -- | Update on slave site. 
 --      The steps are:  
 --      - Request Update from Master
 --      - Master issues Update with same RequestID
 --      - repHandler replicates and puts result in MVar
--- todo: this intereferes with Master Updates!
 scheduleSlaveUpdate :: UpdateEvent e => SlaveState (EventState e) -> e -> IO (MVar (EventResult e))
 scheduleSlaveUpdate SlaveState{..} event = do
         debug "Update by Slave."
@@ -207,12 +207,11 @@ scheduleSlaveUpdate SlaveState{..} event = do
             let encoded = runPutLazy (safePut event)
             let reqId = if M.null srs then 0 else (+1) $ fst $ M.findMax srs
             sendToMaster slaveZmqSocket $ ReqUpdate reqId (methodTag event, encoded)
-            -- todo: this could be more efficient
+            -- todo: could this be more efficient?
             let callback = putMVar result =<< takeMVar =<< scheduleUpdate slaveLocalState event 
             return $ M.insert reqId callback srs
         return result
 
-    
 -- | Send a message to Master.
 sendToMaster :: Socket Dealer -> SlaveMessage -> IO ()
 sendToMaster sock smsg = send sock [] $ encode smsg

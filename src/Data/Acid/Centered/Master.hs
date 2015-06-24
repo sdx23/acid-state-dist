@@ -94,7 +94,6 @@ masterRequestHandler masterState@MasterState{..} = do
                 case msg of
                     -- New Slave joined.
                     NewSlave r -> do
-                        -- todo: the state should be locked at this point to avoid losses(?)
                         pastUpdates <- getPastUpdates localState r
                         connectNode masterState ident pastUpdates
                     -- Slave is done replicating.
@@ -128,16 +127,15 @@ updateNodeStatus MasterState{..} ident r =
             -- todo: there should be a fancy way to do this
             when (M.findWithDefault 0 ident ns /= (mr - 1)) $
                 error $ "Invalid increment of node status " ++ show ns ++ " -> " ++ show mr
-            -- todo: checks sensible?
             let rs = M.adjust (+1) ident ns
             when (allNodesDone mr rs) $ debug $ "All nodes done replicating " ++ show mr
             return rs
             where allNodesDone mrev = M.fold (\v t -> (v == mrev) && t) True
 
 -- | Connect a new Slave by getting it up-to-date,
---   i.e. send all past events as Updates.
---   This temporarily blocks all other communication.
--- todo: updates received by slaves are problematic here!
+--   i.e. send all past events as Updates. This is fire&forget.
+--   todo: check HWM
+--   todo: check sync validity
 connectNode :: MasterState st -> NodeIdentity -> [(Int, Tagged CSL.ByteString)] -> IO ()
 connectNode MasterState{..} i pastUpdates = 
     withMVar masterRevision $ \mr -> 

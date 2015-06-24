@@ -30,6 +30,7 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 import Data.Serialize (Serialize(..), put, get,
                        putWord8, getWord8,
                       )
+import System.IO (stderr, hPutStrLn)
 
 --------------------------------------------------------------------------------
 
@@ -46,7 +47,7 @@ type Revision = Int
 type RequestID = Int
 
 debug :: String -> IO ()
-debug = putStrLn 
+debug = hPutStrLn stderr
 
 data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | DoSyncRep Revision (Tagged CSL.ByteString)

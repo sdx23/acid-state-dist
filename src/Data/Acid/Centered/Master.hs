@@ -49,6 +49,7 @@ import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
 
 import System.ZMQ4 (Context, Socket, Router(..), Receiver, Flag(..),
+                    setReceiveHighWM, setSendHighWM, restrict,
                     context, term, socket, close, 
                     bind, unbind,
                     send, receive)
@@ -184,12 +185,14 @@ openMasterState port initialState = do
         let levs = localEvents $ downcast lst
         lrev <- atomically $ readTVar $ logNextEntryId levs
         rev <- newMVar lrev
-        -- remote
-        ctx <- context
-        sock <- socket ctx Router
         repChan <- newChan
         ns <- newMVar M.empty
+        -- remote
         let addr = "tcp://127.0.0.1:" ++ show port
+        ctx <- context
+        sock <- socket ctx Router
+        setReceiveHighWM (restrict (100*1000)) sock
+        setSendHighWM (restrict (100*1000)) sock
         bind sock addr
         let masterState = MasterState { localState = lst
                                       , nodeStatus = ns
@@ -222,7 +225,7 @@ scheduleMasterUpdate :: UpdateEvent event => MasterState (EventState event) -> e
 scheduleMasterUpdate masterState@MasterState{..} event = do
         debug "Update by Master."
         result <- newEmptyMVar 
-        let callback = putMVar result =<< takeMVar =<< scheduleUpdate localState event 
+        let callback = void $ forkIO (putMVar result =<< takeMVar =<< scheduleUpdate localState event)
         let encoded = runPutLazy (safePut event) 
         queueUpdate masterState ((methodTag event, encoded), Left callback)
         return result

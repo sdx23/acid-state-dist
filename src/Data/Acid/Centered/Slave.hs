@@ -51,6 +51,7 @@ import Data.Acid.Log
 import Data.Acid.Centered.Common
 
 import System.ZMQ4 (Context, Socket, Dealer(..), Receiver, Flag(..),
+                    setReceiveHighWM, setSendHighWM, restrict,
                     context, term, socket, close, 
                     connect, disconnect,
                     send, receive)
@@ -108,15 +109,17 @@ enslaveState address port initialState = do
         let levs = localEvents $ downcast lst
         lrev <- atomically $ readTVar $ logNextEntryId levs
         rev <- newMVar lrev
-        -- remote
         debug $ "Opening enslaved state at revision " ++ show lrev
-        ctx <- context
-        sock <- socket ctx Dealer
         srs <- newMVar M.empty
         lastReqId <- newMVar 0
         repChan <- newChan
         syncDone <- Event.new
+        -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
+        ctx <- context
+        sock <- socket ctx Dealer
+        setReceiveHighWM (restrict (100*1000)) sock
+        setSendHighWM (restrict (100*1000)) sock
         connect sock addr
         sendToMaster sock $ NewSlave lrev
         let slaveState = SlaveState { slaveLocalState = lst
@@ -214,7 +217,7 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
             let encoded = runPutLazy (safePut event)
             sendToMaster slaveZmqSocket $ ReqUpdate reqId (methodTag event, encoded)
             timeoutID <- forkIO $ timeoutRequest slaveState reqId
-            let callback = putMVar result =<< takeMVar =<< scheduleUpdate slaveLocalState event 
+            let callback = void $ forkIO $ putMVar result =<< takeMVar =<< scheduleUpdate slaveLocalState event 
             return $ M.insert reqId (callback, timeoutID) srs
         return result
 

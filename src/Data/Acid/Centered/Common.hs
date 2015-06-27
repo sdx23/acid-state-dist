@@ -31,6 +31,8 @@ import Data.Serialize (Serialize(..), put, get,
                        putWord8, getWord8,
                       )
 import System.IO (stderr, hPutStrLn)
+import qualified Control.Concurrent.Lock as L
+import System.IO.Unsafe (unsafePerformIO)
 
 --------------------------------------------------------------------------------
 
@@ -46,8 +48,16 @@ type Revision = Int
 -- | ID of an Update Request.
 type RequestID = Int
 
+
+-- | Debugging without interleaving output from different threads
+{-# NOINLINE debugLock #-}
+debugLock :: L.Lock
+debugLock = unsafePerformIO L.new
+
 debug :: String -> IO ()
-debug = hPutStrLn stderr
+debug = L.with debugLock . hPutStrLn stderr
+-- to turn off debug use
+--debug _ = return ()
 
 data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | DoSyncRep Revision (Tagged CSL.ByteString)

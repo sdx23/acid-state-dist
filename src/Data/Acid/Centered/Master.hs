@@ -230,7 +230,9 @@ scheduleMasterUpdate :: UpdateEvent event => MasterState (EventState event) -> e
 scheduleMasterUpdate masterState@MasterState{..} event = do
         debug "Update by Master."
         result <- newEmptyMVar 
-        let callback = void $ forkIO (putMVar result =<< takeMVar =<< scheduleUpdate localState event)
+        let callback = do
+                hd <- scheduleUpdate localState event
+                void $ forkIO (putMVar result =<< takeMVar hd)
         let encoded = runPutLazy (safePut event) 
         queueUpdate masterState ((methodTag event, encoded), Left callback)
         return result

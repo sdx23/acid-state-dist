@@ -52,6 +52,7 @@ import System.ZMQ4 (Context, Socket, Router(..), Receiver, Flag(..),
                     setReceiveHighWM, setSendHighWM, restrict,
                     context, term, socket, close, 
                     bind, unbind,
+                    poll, Poll(..), Event(..),
                     waitRead,
                     sendMulti, receiveMulti)
 
@@ -92,27 +93,28 @@ type ReplicationItem = (Tagged CSL.ByteString, Either Callback (RequestID, NodeI
 masterRequestHandler :: (Typeable st) => MasterState st -> IO ()
 masterRequestHandler masterState@MasterState{..} = forever $ do
         -- take one frame
-        debug "Waiting for new frame."
-        waitRead =<< readMVar zmqSocket
-        (ident, msg) <- withMVar zmqSocket receiveFrame
-        debug "Got frame."
-        -- handle according frame contents
-        case msg of
-            -- New Slave joined.
-            NewSlave r -> do
-                pastUpdates <- getPastUpdates localState r
-                connectNode masterState ident pastUpdates
-            -- Slave is done replicating.
-            RepDone r -> return () -- updateNodeStatus masterState ident r
-            -- Slave sends an Udate.
-            ReqUpdate rid event ->
-                queueUpdate masterState (event, Right (rid, ident))
-            -- Slave quits.
-            SlaveQuit -> removeFromNodeStatus nodeStatus ident
-            -- no other messages possible
-            _ -> error $ "Unknown message received: " ++ show msg
-        -- loop around
-        debug "Loop iteration."
+        -- waitRead =<< readMVar zmqSocket
+        -- FIXME: we needn't poll if not for strange zmq behaviour
+        re <- withMVar zmqSocket $ \sock -> poll 100 [Sock sock [In] Nothing]
+        unless (null $ head re) $ do
+            (ident, msg) <- withMVar zmqSocket receiveFrame
+            -- handle according frame contents
+            case msg of
+                -- New Slave joined.
+                NewSlave r -> do
+                    pastUpdates <- getPastUpdates localState r
+                    connectNode masterState ident pastUpdates
+                -- Slave is done replicating.
+                RepDone r -> return () -- updateNodeStatus masterState ident r
+                -- Slave sends an Udate.
+                ReqUpdate rid event ->
+                    queueUpdate masterState (event, Right (rid, ident))
+                -- Slave quits.
+                SlaveQuit -> removeFromNodeStatus nodeStatus ident
+                -- no other messages possible
+                _ -> error $ "Unknown message received: " ++ show msg
+            -- loop around
+            debug "Loop iteration."
 
 -- | Fetch past Updates from FileLog for replication.
 getPastUpdates :: (Typeable st) => AcidState st -> Int -> IO [(Int, Tagged CSL.ByteString)]

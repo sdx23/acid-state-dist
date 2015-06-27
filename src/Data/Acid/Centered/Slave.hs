@@ -32,7 +32,7 @@ module Data.Acid.Centered.Slave
     (
       enslaveState
     , SlaveState(..)
-    )	where
+    )  where
 
 import Data.Typeable
 import Data.SafeCopy
@@ -89,10 +89,11 @@ data SlaveState st
                  , slaveZmqContext :: Context
                  , slaveZmqAddr :: String
                  , slaveZmqSocket :: Socket Dealer
+                 , slaveZmqSocketLock :: MVar ()
                  } deriving (Typeable)
 
 -- | Memory of own Requests sent to Master.
-type SlaveRequests = Map RequestID (IO (), ThreadId)
+type SlaveRequests = Map RequestID (IO ())
 
 -- | One Update + Metainformation to replicate.
 type SlaveRepItem = (Revision, Maybe RequestID, Tagged CSL.ByteString)
@@ -114,6 +115,7 @@ enslaveState address port initialState = do
         lastReqId <- newMVar 0
         repChan <- newChan
         syncDone <- Event.new
+        sockLock <- newMVar ()
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
@@ -131,6 +133,7 @@ enslaveState address port initialState = do
                                     , slaveZmqContext = ctx
                                     , slaveZmqAddr = addr
                                     , slaveZmqSocket = sock
+                                    , slaveZmqSocketLock = sockLock
                                     }
         forkIO $ slaveRequestHandler slaveState 
         forkIO $ slaveReplicationHandler slaveState 
@@ -142,7 +145,9 @@ slaveRequestHandler slaveState@SlaveState{..} = forever $ do
         msg <- receive slaveZmqSocket
         case decode msg of
             Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show msg
-            Right mmsg -> case mmsg of
+            Right mmsg -> do
+                 debug $ "Received " ++ show mmsg
+                 case mmsg of
                     -- We are sent an Update to replicate.
                     DoRep r i d -> queueUpdate slaveState (r, i, d)
                     -- We are sent an Update to replicate for synchronization.
@@ -186,14 +191,13 @@ replicateUpdate SlaveState{..} (rev, reqId, event) syncing = do
                         void $ scheduleColdUpdate slaveLocalState event 
                     Just rid -> modifyMVar slaveRequests $ \srs -> do
                         debug $ "This is the Update for Request " ++ show rid
-                        let (icb, tId) = fromMaybe (error $ "Callback not found: " ++ show rid) (M.lookup rid srs) 
+                        let icb = fromMaybe (error $ "Callback not found: " ++ show rid) (M.lookup rid srs) 
                         callback <- icb
-                        killThread tId
                         -- todo: we remember it, clean it up later
-                        let nsrs = M.adjust (\(c, t) -> (return (),tId)) rid srs
+                        let nsrs = M.adjust (\c -> return ()) rid srs
                         return (nsrs, callback) 
                 -- send reply: we're done
-                unless syncing $ sendToMaster slaveZmqSocket $ RepDone rev
+                unless syncing $ withMVar slaveZmqSocketLock $ \_ -> sendToMaster slaveZmqSocket $ RepDone rev
                 return rev
             _  -> do 
                 sendToMaster slaveZmqSocket RepError
@@ -215,19 +219,10 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
         reqId <- modifyMVar slaveLastRequestID $ \x -> return (x+1,x+1)
         modifyMVar_ slaveRequests $ \srs -> do
             let encoded = runPutLazy (safePut event)
-            sendToMaster slaveZmqSocket $ ReqUpdate reqId (methodTag event, encoded)
-            timeoutID <- forkIO $ timeoutRequest slaveState reqId
+            withMVar slaveZmqSocketLock $ \_ -> sendToMaster slaveZmqSocket $ ReqUpdate reqId (methodTag event, encoded)
             let callback = void $ forkIO $ putMVar result =<< takeMVar =<< scheduleUpdate slaveLocalState event 
-            return $ M.insert reqId (callback, timeoutID) srs
+            return $ M.insert reqId callback srs
         return result
-
--- | Checks that requests actually are answered.
-timeoutRequest :: SlaveState st -> RequestID -> IO ()
-timeoutRequest SlaveState{..} reqId = do
-        threadDelay $ 5*1000*1000
-        stillThere <- withMVar slaveRequests (return . M.member reqId)
-        when stillThere $ error "Update-Request was not handled Master."
-
 
 -- | Send a message to Master.
 sendToMaster :: Socket Dealer -> SlaveMessage -> IO ()

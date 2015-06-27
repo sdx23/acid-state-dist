@@ -71,6 +71,7 @@ library
                        containers,
                        transformers,
                        stm,
+                       semigroups,
                        mtl
   
   -- Directories containing source files.

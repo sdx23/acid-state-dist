@@ -14,6 +14,7 @@
 module Data.Acid.Centered.Common
     (
       debug
+    , crcOfState
     , NodeRevision
     , Revision
     , RequestID
@@ -22,14 +23,22 @@ module Data.Acid.Centered.Common
     , MasterMessage(..)
     ) where
 
-import Data.Acid.Core (Tagged(..))
+import Data.Acid.Core (Tagged(..), withCoreState)
+import Data.Acid.Local (localCore)
+import Data.Acid.Abstract (downcast)
+import Data.Acid (AcidState, IsAcidic)
+import Data.Acid.CRC (crc16)
 
 import Control.Monad (liftM, liftM2, liftM3)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as CSL
 import Data.Serialize (Serialize(..), put, get,
                        putWord8, getWord8,
+                       runPutLazy
                       )
+import Data.Typeable (Typeable)
+import Data.SafeCopy (safePut)
+import Data.Word (Word16)
 import System.IO (stderr, hPutStrLn)
 import qualified Control.Concurrent.Lock as L
 import System.IO.Unsafe (unsafePerformIO)
@@ -48,6 +57,9 @@ type Revision = Int
 -- | ID of an Update Request.
 type RequestID = Int
 
+-- | We use CRC16 for now.
+type Crc = Word16
+
 
 -- | Debugging without interleaving output from different threads
 {-# NOINLINE debugLock #-}
@@ -65,7 +77,7 @@ data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | MasterQuit
                   deriving (Show)
 
-data SlaveMessage = NewSlave Int
+data SlaveMessage = NewSlave Int Crc
                   | RepDone Int
                   | RepError
                   | ReqUpdate RequestID (Tagged CSL.ByteString)
@@ -89,7 +101,7 @@ instance Serialize MasterMessage where
 
 instance Serialize SlaveMessage where
     put msg = case msg of
-        NewSlave r    -> putWord8 0 >> put r
+        NewSlave r c  -> putWord8 0 >> put r >> put c
         RepDone r     -> putWord8 1 >> put r
         RepError      -> putWord8 2
         ReqUpdate i d -> putWord8 3 >> put i >> put d
@@ -97,9 +109,17 @@ instance Serialize SlaveMessage where
     get = do
         tag <- getWord8
         case tag of
-            0 -> liftM NewSlave get
+            0 -> liftM2 NewSlave get get
             1 -> liftM RepDone get
             2 -> return RepError
             3 -> liftM2 ReqUpdate get get
             9 -> return SlaveQuit
             _ -> error $ "Data.Serialize.get failed for SlaveMessage: invalid tag " ++ show tag
+
+-- | Compute the CRC of a state.
+crcOfState :: (IsAcidic st, Typeable st) => AcidState st -> IO Crc
+crcOfState state = do
+    let lst = downcast state
+    withCoreState (localCore lst) $ \st -> do
+        let encoded = runPutLazy (safePut st)
+        return $ crc16 encoded

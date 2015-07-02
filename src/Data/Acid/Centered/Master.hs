@@ -101,9 +101,17 @@ masterRequestHandler masterState@MasterState{..} = forever $ do
             -- handle according frame contents
             case msg of
                 -- New Slave joined.
-                NewSlave r -> do
+                NewSlave r _ -> do
                     pastUpdates <- getPastUpdates localState r
                     connectNode masterState ident pastUpdates
+                {- fixme take the correct state revision
+                NewSlave r c -> do
+                    if crcOfState localState == c then 
+                        pastUpdates <- getPastUpdates localState r
+                        connectNode masterState ident pastUpdates
+                    else
+                        error "checksum mismatch."
+                -}
                 -- Slave is done replicating.
                 RepDone r -> return () -- updateNodeStatus masterState ident r
                 -- Slave sends an Udate.

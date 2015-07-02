@@ -117,6 +117,7 @@ enslaveState address port initialState = do
         repChan <- newChan
         syncDone <- Event.new
         sockLock <- newMVar ()
+        lcrc <- crcOfState lst
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
@@ -125,7 +126,7 @@ enslaveState address port initialState = do
         setSendHighWM (restrict (100*1000)) sock
         connect sock addr
         msock <- newMVar sock
-        sendToMaster msock $ NewSlave lrev
+        sendToMaster msock $ NewSlave lrev lcrc
         let slaveState = SlaveState { slaveLocalState = lst
                                     , slaveRepChan = repChan
                                     , slaveSyncDone = syncDone

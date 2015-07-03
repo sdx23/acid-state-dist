@@ -15,6 +15,7 @@ module Data.Acid.Centered.Common
     (
       debug
     , crcOfState
+    , Crc
     , NodeRevision
     , Revision
     , RequestID
@@ -73,11 +74,11 @@ debug = L.with debugLock . hPutStrLn stderr
 
 data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | DoSyncRep Revision (Tagged CSL.ByteString)
-                   | SyncDone
+                   | SyncDone Crc
                    | MasterQuit
                   deriving (Show)
 
-data SlaveMessage = NewSlave Int Crc
+data SlaveMessage = NewSlave Int
                   | RepDone Int
                   | RepError
                   | ReqUpdate RequestID (Tagged CSL.ByteString)
@@ -88,20 +89,20 @@ instance Serialize MasterMessage where
     put msg = case msg of
         DoRep r i d   -> putWord8 0 >> put r >> put i >> put d
         DoSyncRep r d -> putWord8 1 >> put r >> put d
-        SyncDone      -> putWord8 2
+        SyncDone c    -> putWord8 2 >> put c
         MasterQuit    -> putWord8 9
     get = do 
         tag <- getWord8
         case tag of
             0 -> liftM3 DoRep get get get
             1 -> liftM2 DoSyncRep get get
-            2 -> return SyncDone
+            2 -> liftM SyncDone get
             9 -> return MasterQuit
             _ -> error $ "Data.Serialize.get failed for MasterMessage: invalid tag " ++ show tag
 
 instance Serialize SlaveMessage where
     put msg = case msg of
-        NewSlave r c  -> putWord8 0 >> put r >> put c
+        NewSlave r    -> putWord8 0 >> put r
         RepDone r     -> putWord8 1 >> put r
         RepError      -> putWord8 2
         ReqUpdate i d -> putWord8 3 >> put i >> put d
@@ -109,7 +110,7 @@ instance Serialize SlaveMessage where
     get = do
         tag <- getWord8
         case tag of
-            0 -> liftM2 NewSlave get get
+            0 -> liftM NewSlave get
             1 -> liftM RepDone get
             2 -> return RepError
             3 -> liftM2 ReqUpdate get get

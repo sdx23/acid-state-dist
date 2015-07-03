@@ -90,7 +90,7 @@ type ReplicationItem = (Tagged CSL.ByteString, Either Callback (RequestID, NodeI
 --      o handle receiving requests from nodes,
 --      o answering as needed (old updates),
 --      o bookkeeping on node states. 
-masterRequestHandler :: (Typeable st) => MasterState st -> IO ()
+masterRequestHandler :: (IsAcidic st, Typeable st) => MasterState st -> IO ()
 masterRequestHandler masterState@MasterState{..} = forever $ do
         -- take one frame
         -- waitRead =<< readMVar zmqSocket
@@ -101,17 +101,9 @@ masterRequestHandler masterState@MasterState{..} = forever $ do
             -- handle according frame contents
             case msg of
                 -- New Slave joined.
-                NewSlave r _ -> do
+                NewSlave r -> do
                     pastUpdates <- getPastUpdates localState r
                     connectNode masterState ident pastUpdates
-                {- fixme take the correct state revision
-                NewSlave r c -> do
-                    if crcOfState localState == c then 
-                        pastUpdates <- getPastUpdates localState r
-                        connectNode masterState ident pastUpdates
-                    else
-                        error "checksum mismatch."
-                -}
                 -- Slave is done replicating.
                 RepDone r -> return () -- updateNodeStatus masterState ident r
                 -- Slave sends an Udate.
@@ -150,12 +142,14 @@ updateNodeStatus MasterState{..} ident r =
 --   i.e. send all past events as Updates. This is fire&forget.
 --   todo: check HWM
 --   todo: check sync validity
-connectNode :: MasterState st -> NodeIdentity -> [(Int, Tagged CSL.ByteString)] -> IO ()
+connectNode :: (IsAcidic st, Typeable st) => MasterState st -> NodeIdentity -> [(Int, Tagged CSL.ByteString)] -> IO ()
 connectNode MasterState{..} i pastUpdates = 
     withMVar masterRevision $ \mr -> 
         modifyMVar_ nodeStatus $ \ns -> do
+            -- todo: do we need to lock masterState for crc?
+            crc <- crcOfState localState
             forM_ pastUpdates $ \(r, u) -> sendSyncUpdate zmqSocket r u i
-            sendToSlave zmqSocket SyncDone i
+            sendToSlave zmqSocket (SyncDone crc) i
             return $ M.insert i mr ns 
 
 -- | Send a message to a Slave

@@ -117,7 +117,6 @@ enslaveState address port initialState = do
         repChan <- newChan
         syncDone <- Event.new
         sockLock <- newMVar ()
-        lcrc <- crcOfState lst
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
@@ -126,7 +125,7 @@ enslaveState address port initialState = do
         setSendHighWM (restrict (100*1000)) sock
         connect sock addr
         msock <- newMVar sock
-        sendToMaster msock $ NewSlave lrev lcrc
+        sendToMaster msock $ NewSlave lrev
         let slaveState = SlaveState { slaveLocalState = lst
                                     , slaveRepChan = repChan
                                     , slaveSyncDone = syncDone
@@ -142,7 +141,7 @@ enslaveState address port initialState = do
         return $ slaveToAcidState slaveState 
 
 -- | Replication handler of the Slave. 
-slaveRequestHandler :: SlaveState st -> IO ()
+slaveRequestHandler :: (IsAcidic st, Typeable st) => SlaveState st -> IO ()
 slaveRequestHandler slaveState@SlaveState{..} = forever $ do
         --waitRead =<< readMVar slaveZmqSocket
         -- FIXME: we needn't poll if not for strange zmq behaviour
@@ -159,11 +158,22 @@ slaveRequestHandler slaveState@SlaveState{..} = forever $ do
                         -- We are sent an Update to replicate for synchronization.
                         DoSyncRep r d -> replicateSyncUpdate slaveState r d 
                         -- Master done sending all synchronization Updates.
-                        SyncDone -> debug "Sync Done." >> Event.set slaveSyncDone
+                        SyncDone c -> onSyncDone slaveState c
                         -- We are requested to Quit.
                         MasterQuit -> undefined -- todo: how get a State that wasn't closed closed?
                         -- no other messages possible
                         _ -> error $ "Unknown message received: " ++ show mmsg
+
+-- | After sync check CRC
+onSyncDone :: (IsAcidic st, Typeable st) => SlaveState st -> Crc -> IO ()
+onSyncDone slaveState@SlaveState{..} crc = do
+    localCrc <- crcOfState slaveLocalState
+    if crc /= localCrc then do
+        putStrLn "Data.Acid.Centered.Slave: CRC mismatch after sync. Exiting."
+        liberateState slaveState
+    else do
+        debug "Sync Done, CRC fine."
+        Event.set slaveSyncDone
 
 -- | Queue Updates into Chan for replication.
 queueUpdate :: SlaveState st -> SlaveRepItem -> IO ()

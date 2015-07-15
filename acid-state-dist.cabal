@@ -72,8 +72,7 @@ library
                        transformers,
                        stm,
                        semigroups,
-                       mtl,
-                       synchronous-channels
+                       mtl
   
   -- Directories containing source files.
   hs-source-dirs:      src

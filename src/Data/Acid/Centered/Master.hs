@@ -110,7 +110,9 @@ masterRequestHandler masterState@MasterState{..} = forever $ do
                 ReqUpdate rid event ->
                     queueUpdate masterState (event, Right (rid, ident))
                 -- Slave quits.
-                SlaveQuit -> removeFromNodeStatus nodeStatus ident
+                SlaveQuit -> do
+                    removeFromNodeStatus nodeStatus ident
+                    sendToSlave zmqSocket MayQuit ident
                 -- no other messages possible
                 _ -> error $ "Unknown message received: " ++ show msg
             -- loop around

@@ -15,7 +15,6 @@ module Data.Acid.Centered.Common
     (
       debug
     , waitPoll
-    , addMyThreadId
     , crcOfState
     , Crc
     , NodeRevision
@@ -80,6 +79,7 @@ debug = L.with debugLock . hPutStrLn stderr
 data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | DoSyncRep Revision (Tagged CSL.ByteString)
                    | SyncDone Crc
+                   | MayQuit
                    | MasterQuit
                   deriving (Show)
 
@@ -95,6 +95,7 @@ instance Serialize MasterMessage where
         DoRep r i d   -> putWord8 0 >> put r >> put i >> put d
         DoSyncRep r d -> putWord8 1 >> put r >> put d
         SyncDone c    -> putWord8 2 >> put c
+        MayQuit       -> putWord8 8
         MasterQuit    -> putWord8 9
     get = do 
         tag <- getWord8
@@ -102,6 +103,7 @@ instance Serialize MasterMessage where
             0 -> liftM3 DoRep get get get
             1 -> liftM2 DoSyncRep get get
             2 -> liftM SyncDone get
+            8 -> return MayQuit
             9 -> return MasterQuit
             _ -> error $ "Data.Serialize.get failed for MasterMessage: invalid tag " ++ show tag
 
@@ -129,12 +131,6 @@ crcOfState state = do
     withCoreState (localCore lst) $ \st -> do
         let encoded = runPutLazy (safePut st)
         return $ crc16 encoded
-
--- | Add own threadId to a list of such.
-addMyThreadId :: [ThreadId] -> IO [ThreadId]
-addMyThreadId ts = do
-        nt <- myThreadId
-        return (nt:ts)
 
 -- | By polling, wait until predicate true.
 waitPoll :: Int -> IO Bool -> IO ()

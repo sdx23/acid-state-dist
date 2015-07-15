@@ -14,8 +14,9 @@
 module Data.Acid.Centered.Common
     (
       debug
-    , crcOfState
+    , waitPoll
     , addMyThreadId
+    , crcOfState
     , Crc
     , NodeRevision
     , Revision
@@ -31,8 +32,10 @@ import Data.Acid.Abstract (downcast)
 import Data.Acid (AcidState, IsAcidic)
 import Data.Acid.CRC (crc16)
 
-import Control.Monad (liftM, liftM2, liftM3)
-import Control.Concurrent (ThreadId, myThreadId)
+import Control.Monad (liftM, liftM2, liftM3,
+                      unless
+                     )
+import Control.Concurrent (ThreadId, myThreadId, threadDelay)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as CSL
 import Data.Serialize (Serialize(..), put, get,
@@ -133,3 +136,6 @@ addMyThreadId ts = do
         nt <- myThreadId
         return (nt:ts)
 
+-- | By polling, wait until predicate true.
+waitPoll :: Int -> IO Bool -> IO ()
+waitPoll t p = p >>= \e -> unless e $ threadDelay t >> waitPoll t p

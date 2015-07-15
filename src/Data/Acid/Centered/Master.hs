@@ -176,7 +176,7 @@ receiveFrame sock = do
         -- todo: pass on exceptions
         Left str -> error $ "Data.Serialize.decode failed on SlaveMessage: " ++ show msg
         Right smsg -> do
-            debug $ "Received from [" ++ show ident ++ "]: "
+            debug $ "Received from [" ++ CS.unpack ident ++ "]: "
                         ++ take 20 (show smsg)
             return (ident, smsg)
 

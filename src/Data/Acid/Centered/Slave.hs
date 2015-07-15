@@ -151,7 +151,7 @@ slaveRequestHandler slaveState@SlaveState{..} = forever $ do
             case decode msg of
                 Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show msg
                 Right mmsg -> do
-                     debug $ "Received " ++ show mmsg
+                     debug $ "Received: " ++ show mmsg
                      case mmsg of
                         -- We are sent an Update to replicate.
                         DoRep r i d -> queueUpdate slaveState (r, i, d)

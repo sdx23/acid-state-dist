@@ -58,13 +58,14 @@ import System.ZMQ4 (Context, Socket, Dealer(..), Receiver, Flag(..),
                     connect, disconnect,
                     send, receive)
 
-import Control.Concurrent (forkIO, threadDelay, ThreadId, killThread)
+import Control.Concurrent (forkIO, threadDelay, ThreadId, myThreadId, killThread)
 import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar, 
                                 withMVar, modifyMVar, modifyMVar_,
                                 readMVar,
                                 takeMVar, putMVar)
 import Control.Monad (forever, void,
-                      when, unless
+                      when, unless,
+                      forM_
                      )
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
@@ -88,6 +89,7 @@ data SlaveState st
                  , slaveRevision :: MVar NodeRevision
                  , slaveRequests :: MVar SlaveRequests
                  , slaveLastRequestID :: MVar RequestID
+                 , slaveThreads :: MVar [ThreadId]
                  , slaveZmqContext :: Context
                  , slaveZmqAddr :: String
                  , slaveZmqSocket :: MVar (Socket Dealer)
@@ -117,6 +119,7 @@ enslaveState address port initialState = do
         repChan <- newChan
         syncDone <- Event.new
         sockLock <- newMVar ()
+        threads <- newMVar []
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
@@ -132,6 +135,7 @@ enslaveState address port initialState = do
                                     , slaveRevision = rev
                                     , slaveRequests = srs
                                     , slaveLastRequestID = lastReqId
+                                    , slaveThreads = threads
                                     , slaveZmqContext = ctx
                                     , slaveZmqAddr = addr
                                     , slaveZmqSocket = msock
@@ -143,6 +147,7 @@ enslaveState address port initialState = do
 -- | Replication handler of the Slave. 
 slaveRequestHandler :: (IsAcidic st, Typeable st) => SlaveState st -> IO ()
 slaveRequestHandler slaveState@SlaveState{..} = forever $ do
+        modifyMVar_ slaveThreads addMyThreadId
         --waitRead =<< readMVar slaveZmqSocket
         -- FIXME: we needn't poll if not for strange zmq behaviour
         re <- withMVar slaveZmqSocket $ \sock -> poll 100 [Sock sock [In] Nothing]
@@ -182,7 +187,10 @@ queueUpdate SlaveState{..} repItem@(rev, _, _) = do
         writeChan slaveRepChan repItem
 
 -- | Replicates content of Chan.
+slaveReplicationHandler :: SlaveState st -> IO ()
 slaveReplicationHandler slaveState@SlaveState{..} = do
+        modifyMVar_ slaveThreads addMyThreadId
+        -- todo: timeout is magic variable, make customizable?
         noTimeout <- Event.waitTimeout slaveSyncDone $ 10*1000*1000
         unless noTimeout $ error "Slave took too long to sync, ran into timeout."
         forever $ do
@@ -231,6 +239,7 @@ scheduleSlaveUpdate :: UpdateEvent e => SlaveState (EventState e) -> e -> IO (MV
 scheduleSlaveUpdate slaveState@SlaveState{..} event = do
         debug "Update by Slave."
         result <- newEmptyMVar
+        -- slaveLastRequestID is only modified here - and used for locking the state
         reqId <- modifyMVar slaveLastRequestID $ \x -> return (x+1,x+1)
         modifyMVar_ slaveRequests $ \srs -> do
             let encoded = runPutLazy (safePut event)
@@ -249,8 +258,18 @@ sendToMaster msock smsg = withMVar msock $ \sock -> send sock [] (encode smsg)
 liberateState :: SlaveState st -> IO ()
 liberateState SlaveState{..} = do
         debug "Closing Slave state."
+        -- lock state against updates: disallow requests
+        -- todo: rather use a special value allowing exceptions in scheduleUpdate
+        _ <- takeMVar slaveLastRequestID
+        -- check / wait unprocessed requests
+        -- TODO
         -- send master quit message
         sendToMaster slaveZmqSocket SlaveQuit
+        -- wait replication chan
+        -- TODO
+        -- kill handler threads
+        withMVar slaveThreads $ \ts ->
+            forM_ ts killThread
         -- cleanup zmq
         withMVar slaveZmqSocket $ \s -> do
             disconnect s slaveZmqAddr 

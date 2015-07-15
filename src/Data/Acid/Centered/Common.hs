@@ -15,6 +15,7 @@ module Data.Acid.Centered.Common
     (
       debug
     , crcOfState
+    , addMyThreadId
     , Crc
     , NodeRevision
     , Revision
@@ -31,6 +32,7 @@ import Data.Acid (AcidState, IsAcidic)
 import Data.Acid.CRC (crc16)
 
 import Control.Monad (liftM, liftM2, liftM3)
+import Control.Concurrent (ThreadId, myThreadId)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as CSL
 import Data.Serialize (Serialize(..), put, get,
@@ -124,3 +126,10 @@ crcOfState state = do
     withCoreState (localCore lst) $ \st -> do
         let encoded = runPutLazy (safePut st)
         return $ crc16 encoded
+
+-- | Add own threadId to a list of such.
+addMyThreadId :: [ThreadId] -> IO [ThreadId]
+addMyThreadId ts = do
+        nt <- myThreadId
+        return (nt:ts)
+

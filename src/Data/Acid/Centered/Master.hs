@@ -40,7 +40,7 @@ import Data.Serialize (Serialize(..), put, get,
 
 import Data.Acid.Centered.Common
 
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread)
 import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan)
 import Control.Monad (when, unless, void,
                       forever, forM_, 
@@ -66,7 +66,7 @@ import qualified Data.List.NonEmpty as NEL
 -- auto imports following - need to be cleaned up
 import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
                                takeMVar, putMVar,
-                               readMVar,
+                               readMVar, isEmptyMVar,
                                modifyMVar, modifyMVar_, withMVar)
 
 --------------------------------------------------------------------------------
@@ -74,8 +74,11 @@ import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
 data MasterState st 
     = MasterState { localState :: AcidState st
                   , nodeStatus :: MVar NodeStatus
+                  , masterStateLock :: MVar ()
                   , masterRevision :: MVar NodeRevision
-                  , masterReplicationChan :: Chan ReplicationItem
+                  , masterReplicationChan :: Chan (Maybe ReplicationItem)
+                  , masterReqThreadId :: MVar ThreadId
+                  , masterRepThreadId :: MVar ThreadId
                   , zmqContext :: Context
                   , zmqAddr :: String
                   , zmqSocket :: MVar (Socket Router)
@@ -91,7 +94,10 @@ type ReplicationItem = (Tagged CSL.ByteString, Either Callback (RequestID, NodeI
 --      o answering as needed (old updates),
 --      o bookkeeping on node states. 
 masterRequestHandler :: (IsAcidic st, Typeable st) => MasterState st -> IO ()
-masterRequestHandler masterState@MasterState{..} = forever $ do
+masterRequestHandler masterState@MasterState{..} = do
+    mtid <- myThreadId
+    putMVar masterReqThreadId mtid
+    forever $ do
         -- take one frame
         -- waitRead =<< readMVar zmqSocket
         -- FIXME: we needn't poll if not for strange zmq behaviour
@@ -111,8 +117,8 @@ masterRequestHandler masterState@MasterState{..} = forever $ do
                     queueUpdate masterState (event, Right (rid, ident))
                 -- Slave quits.
                 SlaveQuit -> do
-                    removeFromNodeStatus nodeStatus ident
                     sendToSlave zmqSocket MayQuit ident
+                    removeFromNodeStatus nodeStatus ident
                 -- no other messages possible
                 _ -> error $ "Unknown message received: " ++ show msg
             -- loop around
@@ -204,10 +210,16 @@ openMasterState port initialState = do
         setSendHighWM (restrict (100*1000)) sock
         bind sock addr
         msock <- newMVar sock
+        repTid <- newEmptyMVar
+        reqTid <- newEmptyMVar
+        lock <- newEmptyMVar
         let masterState = MasterState { localState = lst
                                       , nodeStatus = ns
+                                      , masterStateLock = lock
                                       , masterRevision = rev
                                       , masterReplicationChan = repChan
+                                      , masterRepThreadId = repTid
+                                      , masterReqThreadId = reqTid
                                       , zmqContext = ctx
                                       , zmqAddr = addr
                                       , zmqSocket = msock
@@ -220,9 +232,24 @@ openMasterState port initialState = do
 closeMasterState :: MasterState st -> IO ()
 closeMasterState MasterState{..} = do
         debug "Closing master state."
+        -- disallow requests
+        putMVar masterStateLock ()
+        -- send nodes quit
+        debug "Nodes to quitting."
+        withMVar nodeStatus $ mapM_ (sendToSlave zmqSocket MasterQuit) . M.keys
         -- wait all nodes done
-        -- todo^ - not necessary for now
+        waitPoll 100 (withMVar nodeStatus (return . M.null))
+        -- todo: this could use a timeout, there may be zombies
+        -- wait replication chan
+        debug "Waiting for repChan to empty."
+        writeChan masterReplicationChan Nothing
+        mtid <- myThreadId
+        putMVar masterRepThreadId mtid
+        -- kill handler
+        debug "Killing request handler."
+        withMVar masterReqThreadId killThread
         -- cleanup zmq
+        debug "Closing down zmq."
         withMVar zmqSocket $ \sock -> do
             unbind sock zmqAddr 
             close sock
@@ -235,13 +262,16 @@ closeMasterState MasterState{..} = do
 scheduleMasterUpdate :: UpdateEvent event => MasterState (EventState event) -> event -> IO (MVar (EventResult event))
 scheduleMasterUpdate masterState@MasterState{..} event = do
         debug "Update by Master."
-        result <- newEmptyMVar 
-        let callback = do
-                hd <- scheduleUpdate localState event
-                void $ forkIO (putMVar result =<< takeMVar hd)
-        let encoded = runPutLazy (safePut event) 
-        queueUpdate masterState ((methodTag event, encoded), Left callback)
-        return result
+        unlocked <- isEmptyMVar masterStateLock
+        if not unlocked then error "State is locked!"
+        else do
+            result <- newEmptyMVar 
+            let callback = do
+                    hd <- scheduleUpdate localState event
+                    void $ forkIO (putMVar result =<< takeMVar hd)
+            let encoded = runPutLazy (safePut event) 
+            queueUpdate masterState ((methodTag event, encoded), Left callback)
+            return result
              
 -- | Remove nodes that were not responsive
 removeLaggingNodes :: MasterState st -> IO ()
@@ -251,32 +281,43 @@ removeLaggingNodes MasterState{..} =
 
 -- | Queue an Update (originating from the Master itself of an Slave via zmq)
 queueUpdate :: MasterState st -> ReplicationItem -> IO ()
-queueUpdate MasterState{..} = writeChan masterReplicationChan
+queueUpdate MasterState{..} = writeChan masterReplicationChan . Just
 
 -- | The replication handler. Takes care to run Updates locally in the same
 --   order as sending them out to the network.
 masterReplicationHandler :: MasterState st -> IO ()
-masterReplicationHandler MasterState{..} = forever $ do
-        debug "Replicating next item."
-        (event, sink) <- readChan masterReplicationChan
-        -- todo: temporary only one Chan, no improvement to without chan!
-        -- local part
-        withMVar masterRevision $ \mr -> debug $ "Replicating Update myself to " ++ show (mr + 1)
-        case sink of 
-            Left callback   -> callback 
-            _               -> void $ scheduleColdUpdate localState event
-        -- remote part
-        withMVar nodeStatus $ \ns -> do
-            debug $ "Sending Update to Slaves, there are " ++ show (M.size ns)
-            modifyMVar_ masterRevision $ \mrOld -> do
-                let mr = mrOld + 1 
-                case sink of
-                    Left _ -> forM_ (M.keys ns) $ sendUpdate zmqSocket mr Nothing event 
-                    Right (reqID, reqNodeIdent) -> do
-                        let noReqSlaves = filter (/= reqNodeIdent) $ M.keys ns 
-                        sendUpdate zmqSocket mr (Just reqID) event reqNodeIdent
-                        forM_ noReqSlaves $ sendUpdate zmqSocket mr Nothing event 
-                return mr
+masterReplicationHandler MasterState{..} = do
+    mtid <- myThreadId
+    putMVar masterRepThreadId mtid
+    let loop = do
+            debug "Replicating next item."
+            mayEvSi <- readChan masterReplicationChan
+            case mayEvSi of
+                Nothing -> return ()
+                Just (event, sink) -> do
+                    -- todo: temporary only one Chan, no improvement to without chan!
+                    -- local part
+                    withMVar masterRevision $ \mr ->
+                        debug $ "Replicating Update myself to " ++ show (mr + 1)
+                    case sink of 
+                        Left callback   -> callback 
+                        _               -> void $ scheduleColdUpdate localState event
+                    -- remote part
+                    withMVar nodeStatus $ \ns -> do
+                        debug $ "Sending Update to Slaves, there are " ++ show (M.size ns)
+                        modifyMVar_ masterRevision $ \mrOld -> do
+                            let mr = mrOld + 1 
+                            case sink of
+                                Left _ -> forM_ (M.keys ns) $ sendUpdate zmqSocket mr Nothing event 
+                                Right (reqID, reqNodeIdent) -> do
+                                    let noReqSlaves = filter (/= reqNodeIdent) $ M.keys ns 
+                                    sendUpdate zmqSocket mr (Just reqID) event reqNodeIdent
+                                    forM_ noReqSlaves $ sendUpdate zmqSocket mr Nothing event 
+                            return mr
+                    loop
+    loop
+    -- signal that we're done
+    void $ takeMVar masterRepThreadId
 
 toAcidState :: IsAcidic st => MasterState st -> AcidState st
 toAcidState master 

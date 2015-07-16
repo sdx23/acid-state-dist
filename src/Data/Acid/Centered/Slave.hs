@@ -172,7 +172,7 @@ slaveRequestHandler slaveState@SlaveState{..} = do
                         -- We are allowed to Quit.
                         MayQuit -> writeChan slaveRepChan Nothing
                         -- We are requested to Quit.
-                        MasterQuit -> undefined -- todo: how get a State that wasn't closed closed?
+                        MasterQuit -> void $ forkIO $ liberateState slaveState
                         -- no other messages possible
                         _ -> error $ "Unknown message received: " ++ show mmsg
 

@@ -79,6 +79,7 @@ debug = L.with debugLock . hPutStrLn stderr
 data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | DoSyncRep Revision (Tagged CSL.ByteString)
                    | SyncDone Crc
+                   | DoCheckpoint Revision
                    | MayQuit
                    | MasterQuit
                   deriving (Show)
@@ -95,6 +96,7 @@ instance Serialize MasterMessage where
         DoRep r i d   -> putWord8 0 >> put r >> put i >> put d
         DoSyncRep r d -> putWord8 1 >> put r >> put d
         SyncDone c    -> putWord8 2 >> put c
+        DoCheckpoint r -> putWord8 3 >> put r
         MayQuit       -> putWord8 8
         MasterQuit    -> putWord8 9
     get = do 
@@ -103,6 +105,7 @@ instance Serialize MasterMessage where
             0 -> liftM3 DoRep get get get
             1 -> liftM2 DoSyncRep get get
             2 -> liftM SyncDone get
+            3 -> liftM DoCheckpoint get
             8 -> return MayQuit
             9 -> return MasterQuit
             _ -> error $ "Data.Serialize.get failed for MasterMessage: invalid tag " ++ show tag

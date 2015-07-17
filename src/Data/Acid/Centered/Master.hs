@@ -76,7 +76,7 @@ data MasterState st
                   , nodeStatus :: MVar NodeStatus
                   , masterStateLock :: MVar ()
                   , masterRevision :: MVar NodeRevision
-                  , masterReplicationChan :: Chan (Maybe ReplicationItem)
+                  , masterReplicationChan :: Chan ReplicationItem
                   , masterReqThreadId :: MVar ThreadId
                   , masterRepThreadId :: MVar ThreadId
                   , zmqContext :: Context
@@ -87,8 +87,11 @@ data MasterState st
 type NodeIdentity = ByteString
 type NodeStatus = Map NodeIdentity NodeRevision
 type Callback = IO ()
-type ReplicationItem = (Tagged CSL.ByteString, Either Callback (RequestID, NodeIdentity))
-        
+data ReplicationItem =
+      RIEnd
+    | RICheckpoint
+    | RIUpdate (Tagged CSL.ByteString) (Either Callback (RequestID, NodeIdentity))
+
 -- | The request handler on master node. Does
 --      o handle receiving requests from nodes,
 --      o answering as needed (old updates),
@@ -114,7 +117,7 @@ masterRequestHandler masterState@MasterState{..} = do
                 RepDone r -> return () -- updateNodeStatus masterState ident r
                 -- Slave sends an Udate.
                 ReqUpdate rid event ->
-                    queueUpdate masterState (event, Right (rid, ident))
+                    queueRepItem masterState (RIUpdate event (Right (rid, ident)))
                 -- Slave quits.
                 SlaveQuit -> do
                     sendToSlave zmqSocket MayQuit ident
@@ -171,7 +174,10 @@ sendSyncUpdate sock revision update = sendToSlave sock (DoSyncRep revision updat
 -- | Send one (encoded) Update to a Slave.
 sendUpdate :: MVar (Socket Router) -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
 sendUpdate sock revision reqId update = sendToSlave sock (DoRep revision reqId update) 
-    
+
+sendCheckpoint :: MVar (Socket Router) -> Revision -> NodeIdentity -> IO ()
+sendCheckpoint sock revision = sendToSlave sock (DoCheckpoint revision)
+
 -- | Receive one Frame. A Frame consists of three messages: 
 --      sender ID, empty message, and actual content 
 receiveFrame :: (Receiver t) => Socket t -> IO (NodeIdentity, SlaveMessage)
@@ -242,7 +248,7 @@ closeMasterState MasterState{..} = do
         -- todo: this could use a timeout, there may be zombies
         -- wait replication chan
         debug "Waiting for repChan to empty."
-        writeChan masterReplicationChan Nothing
+        writeChan masterReplicationChan RIEnd
         mtid <- myThreadId
         putMVar masterRepThreadId mtid
         -- kill handler
@@ -270,7 +276,7 @@ scheduleMasterUpdate masterState@MasterState{..} event = do
                     hd <- scheduleUpdate localState event
                     void $ forkIO (putMVar result =<< takeMVar hd)
             let encoded = runPutLazy (safePut event) 
-            queueUpdate masterState ((methodTag event, encoded), Left callback)
+            queueRepItem masterState (RIUpdate (methodTag event, encoded) (Left callback))
             return result
              
 -- | Remove nodes that were not responsive
@@ -279,9 +285,9 @@ removeLaggingNodes MasterState{..} =
     -- todo: send the node a quit notice
     withMVar masterRevision $ \mr -> modifyMVar_ nodeStatus $ return . M.filter (== mr) 
 
--- | Queue an Update (originating from the Master itself of an Slave via zmq)
-queueUpdate :: MasterState st -> ReplicationItem -> IO ()
-queueUpdate MasterState{..} = writeChan masterReplicationChan . Just
+-- | Queue an RepItem (originating from the Master itself of an Slave via zmq)
+queueRepItem :: MasterState st -> ReplicationItem -> IO ()
+queueRepItem MasterState{..} = writeChan masterReplicationChan
 
 -- | The replication handler. Takes care to run Updates locally in the same
 --   order as sending them out to the network.
@@ -291,10 +297,22 @@ masterReplicationHandler MasterState{..} = do
     putMVar masterRepThreadId mtid
     let loop = do
             debug "Replicating next item."
-            mayEvSi <- readChan masterReplicationChan
-            case mayEvSi of
-                Nothing -> return ()
-                Just (event, sink) -> do
+            repItem <- readChan masterReplicationChan
+            case repItem of
+                RIEnd -> return ()
+                RICheckpoint -> do
+                    debug "Checkpoint on master."
+                    createCheckpoint localState
+                    withMVar nodeStatus $ \ns -> do
+                        debug "Sending Checkpoint Request to Slaves."
+                        -- todo: we must split up revisions into
+                        -- (checkpoints,updates) and only replicate necessary
+                        -- updates after checkpoints on reconnect
+                        withMVar masterRevision $ \mr -> do
+                            forM_ (M.keys ns) $ sendCheckpoint zmqSocket mr
+                            return mr
+                    loop
+                RIUpdate event sink -> do
                     -- todo: temporary only one Chan, no improvement to without chan!
                     -- local part
                     withMVar masterRevision $ \mr ->
@@ -319,13 +337,25 @@ masterReplicationHandler MasterState{..} = do
     -- signal that we're done
     void $ takeMVar masterRepThreadId
 
+-- | Create a checkpoint (on all nodes).
+--   This is useful for faster resume of both the Master (at startup) and
+--   Slaves (at startup and reconnect).
+createMasterCheckpoint :: MasterState st -> IO ()
+createMasterCheckpoint masterState@MasterState{..} = do
+    debug "Checkpoint on Master."
+    -- We need to be careful to ensure that a checkpoint is created from the
+    -- same revision on all nodes. At this time the Core needs to be locked.
+    unlocked <- isEmptyMVar masterStateLock
+    unless unlocked $ error "State is locked."
+    queueRepItem masterState RICheckpoint
+
 toAcidState :: IsAcidic st => MasterState st -> AcidState st
 toAcidState master 
   = AcidState { _scheduleUpdate    = scheduleMasterUpdate master 
               , scheduleColdUpdate = scheduleColdUpdate $ localState master
               , _query             = query $ localState master
               , queryCold          = queryCold $ localState master
-              , createCheckpoint   = undefined
+              , createCheckpoint   = createMasterCheckpoint master
               , createArchive      = undefined
               , closeAcidState     = closeMasterState master 
               , acidSubState       = mkAnyState master

@@ -84,7 +84,7 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 
 data SlaveState st 
     = SlaveState { slaveLocalState :: AcidState st
-                 , slaveRepChan :: Chan (Maybe SlaveRepItem)
+                 , slaveRepChan :: Chan SlaveRepItem
                  , slaveSyncDone :: Event.Event
                  , slaveRevision :: MVar NodeRevision
                  , slaveRequests :: MVar SlaveRequests
@@ -100,7 +100,10 @@ data SlaveState st
 type SlaveRequests = Map RequestID (IO ())
 
 -- | One Update + Metainformation to replicate.
-type SlaveRepItem = (Revision, Maybe RequestID, Tagged CSL.ByteString)
+data SlaveRepItem =
+      SRIEnd
+    | SRICheckpoint Revision
+    | SRIUpdate Revision (Maybe RequestID) (Tagged CSL.ByteString)
 
 -- | Open a local State as Slave for a Master.
 enslaveState :: (IsAcidic st, Typeable st) =>
@@ -164,13 +167,15 @@ slaveRequestHandler slaveState@SlaveState{..} = do
                      debug $ "Received: " ++ show mmsg
                      case mmsg of
                         -- We are sent an Update to replicate.
-                        DoRep r i d -> queueUpdate slaveState (r, i, d)
+                        DoRep r i d -> queueRepItem slaveState (SRIUpdate r i d)
                         -- We are sent an Update to replicate for synchronization.
                         DoSyncRep r d -> replicateSyncUpdate slaveState r d 
                         -- Master done sending all synchronization Updates.
                         SyncDone c -> onSyncDone slaveState c
+                        -- We are sent an Checkpoint request.
+                        DoCheckpoint r -> queueRepItem slaveState (SRICheckpoint r) 
                         -- We are allowed to Quit.
-                        MayQuit -> writeChan slaveRepChan Nothing
+                        MayQuit -> writeChan slaveRepChan SRIEnd
                         -- We are requested to Quit.
                         MasterQuit -> void $ forkIO $ liberateState slaveState
                         -- no other messages possible
@@ -182,18 +187,17 @@ onSyncDone slaveState@SlaveState{..} crc = do
     localCrc <- crcOfState slaveLocalState
     if crc /= localCrc then do
         putStrLn "Data.Acid.Centered.Slave: CRC mismatch after sync. Exiting."
-        liberateState slaveState
+        void $ forkIO $ liberateState slaveState
     else do
         debug "Sync Done, CRC fine."
         Event.set slaveSyncDone
 
 -- | Queue Updates into Chan for replication.
 -- We use the Chan so Sync-Updates and normal ones can be interleaved.
-queueUpdate :: SlaveState st -> SlaveRepItem -> IO ()
-queueUpdate SlaveState{..} repItem@(rev, _, _) = do
-        debug $ "Queuing Update with revision " ++ show rev
-        --asyncWriteChan slaveRepChan repItem
-        writeChan slaveRepChan (Just repItem)
+queueRepItem :: SlaveState st -> SlaveRepItem -> IO ()
+queueRepItem SlaveState{..} repItem = do
+        debug "Queuing RepItem."
+        writeChan slaveRepChan repItem
 
 -- | Replicates content of Chan.
 slaveReplicationHandler :: SlaveState st -> IO ()
@@ -206,23 +210,26 @@ slaveReplicationHandler slaveState@SlaveState{..} = do
         let loop = do
                 mayRepItem <- readChan slaveRepChan
                 case mayRepItem of
-                    Nothing -> return ()
-                    Just repItem -> do
-                        replicateUpdate slaveState repItem False
+                    SRIEnd -> return ()
+                    SRICheckpoint r -> do
+                        repCheckpoint slaveState r
+                        loop
+                    SRIUpdate r i d -> do
+                        replicateUpdate slaveState r i d False
                         loop
         loop
         -- signal that we're done
         void $ takeMVar slaveRepThreadId
 
 -- | Replicate Sync-Updates directly.
-replicateSyncUpdate slaveState rev event = replicateUpdate slaveState (rev, Nothing, event) True
+replicateSyncUpdate slaveState rev event = replicateUpdate slaveState rev Nothing event True
 
 -- | Replicate an Update as requested by Master.
 --   Updates that were requested by this Slave are run locally and the result
 --   put into the MVar in SlaveRequests.
 --   Other Updates are just replicated without using the result.
-replicateUpdate :: SlaveState st -> SlaveRepItem -> Bool -> IO ()
-replicateUpdate SlaveState{..} (rev, reqId, event) syncing = do
+replicateUpdate :: SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> Bool -> IO ()
+replicateUpdate SlaveState{..} rev reqId event syncing = do
         debug $ "Got an Update to replicate " ++ show rev
         modifyMVar_ slaveRevision $ \nr -> if rev - 1 == nr 
             then do
@@ -246,6 +253,14 @@ replicateUpdate SlaveState{..} (rev, reqId, event) syncing = do
             where decodeEvent ev = case runGet safeGet ev of
                                 Left str -> error str
                                 Right val -> val
+
+repCheckpoint :: SlaveState st -> Revision -> IO ()
+repCheckpoint SlaveState{..} rev = do
+    debug "Got Checkpoint request."
+    withMVar slaveRevision $ \nr ->
+        -- create checkpoint
+        createCheckpoint slaveLocalState
+
 
 -- | Update on slave site. 
 --      The steps are:  

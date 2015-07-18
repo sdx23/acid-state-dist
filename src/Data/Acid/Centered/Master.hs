@@ -62,6 +62,7 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 import qualified Data.ByteString.Char8 as CS
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.List.NonEmpty as NEL
+import Safe (headDef)
 
 -- auto imports following - need to be cleaned up
 import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
@@ -110,9 +111,7 @@ masterRequestHandler masterState@MasterState{..} = do
             -- handle according frame contents
             case msg of
                 -- New Slave joined.
-                NewSlave r -> do
-                    pastUpdates <- getPastUpdates localState r
-                    connectNode masterState ident pastUpdates
+                NewSlave r -> connectNode masterState ident r
                 -- Slave is done replicating.
                 RepDone r -> return () -- updateNodeStatus masterState ident r
                 -- Slave sends an Udate.
@@ -126,10 +125,6 @@ masterRequestHandler masterState@MasterState{..} = do
                 _ -> error $ "Unknown message received: " ++ show msg
             -- loop around
             debug "Loop iteration."
-
--- | Fetch past Updates from FileLog for replication.
-getPastUpdates :: (Typeable st) => AcidState st -> Int -> IO [(Int, Tagged CSL.ByteString)]
-getPastUpdates state startRev = liftM2 zip (return [(startRev+1)..]) (readEntriesFrom (localEvents $ downcast state) startRev)
 
 -- | Remove a Slave node from NodeStatus.
 removeFromNodeStatus :: MVar NodeStatus -> NodeIdentity -> IO ()
@@ -153,19 +148,50 @@ updateNodeStatus MasterState{..} ident r =
 --   i.e. send all past events as Updates. This is fire&forget.
 --   todo: check HWM
 --   todo: check sync validity
-connectNode :: (IsAcidic st, Typeable st) => MasterState st -> NodeIdentity -> [(Int, Tagged CSL.ByteString)] -> IO ()
-connectNode MasterState{..} i pastUpdates = 
+connectNode :: (IsAcidic st, Typeable st) => MasterState st -> NodeIdentity -> Revision -> IO ()
+connectNode MasterState{..} i revision = 
     withMVar masterRevision $ \mr -> 
         modifyMVar_ nodeStatus $ \ns -> do
             -- todo: do we need to lock masterState for crc?
             crc <- crcOfState localState
-            forM_ pastUpdates $ \(r, u) -> sendSyncUpdate zmqSocket r u i
+            -- if there has been one/more checkpoint in between:
+            lastCp <- getLastCheckpointRev localState
+            let lastCpRev = cpRevision lastCp
+            debug $ "Found checkpoint at revision " ++ show lastCpRev
+            if lastCpRev > revision then do
+                -- send last checkpoint and events from after then
+                sendSyncCheckpoint zmqSocket lastCp i
+                pastUpdates <- getPastUpdates localState (lastCpRev + 1)
+                forM_ pastUpdates $ \(r, u) -> sendSyncUpdate zmqSocket r u i
+            else do
+                -- just the events
+                pastUpdates <- getPastUpdates localState revision
+                forM_ pastUpdates $ \(r, u) -> sendSyncUpdate zmqSocket r u i
             sendToSlave zmqSocket (SyncDone crc) i
-            return $ M.insert i mr ns 
+            return $ M.insert i mr ns
+    where cpRevision (Checkpoint r _) = r
+
+-- | Fetch past Updates from FileLog for replication.
+getPastUpdates :: (Typeable st) => AcidState st -> Int -> IO [(Int, Tagged CSL.ByteString)]
+getPastUpdates state startRev = liftM2 zip (return [(startRev+1)..]) (readEntriesFrom (localEvents $ downcast state) startRev)
+
+-- | Get the revision at which the last checkpoint was taken.
+getLastCheckpointRev :: (Typeable st) => AcidState st -> IO Checkpoint
+getLastCheckpointRev state = do
+    let lst = downcast state
+    let cplog = localCheckpoints lst
+    nextId <- atomically $ readTVar $ logNextEntryId cplog
+    cps <- readEntriesFrom cplog (nextId - 1)
+    return $ headDef (Checkpoint 0 CSL.empty) cps
 
 -- | Send a message to a Slave
 sendToSlave :: MVar (Socket Router) -> MasterMessage -> NodeIdentity -> IO ()
 sendToSlave msock msg ident = withMVar msock $ \sock -> sendMulti sock $ NEL.fromList [ident, encode msg]
+
+-- | Send an encoded Checkpoint to a Slave.
+sendSyncCheckpoint :: MVar (Socket Router) -> Checkpoint -> NodeIdentity -> IO ()
+sendSyncCheckpoint sock (Checkpoint cr encoded) =
+    sendToSlave sock (DoSyncCheckpoint cr encoded)
 
 -- | Send one (encoded) Update to a Slave.
 sendSyncUpdate :: MVar (Socket Router) -> Revision -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
@@ -209,7 +235,7 @@ openMasterState port initialState = do
         repChan <- newChan
         ns <- newMVar M.empty
         -- remote
-        let addr = "tcp://127.0.0.1:" ++ show port
+        let addr = "tcp://*:" ++ show port
         ctx <- context
         sock <- socket ctx Router
         setReceiveHighWM (restrict (100*1000)) sock

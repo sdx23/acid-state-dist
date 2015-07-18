@@ -80,6 +80,7 @@ data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | DoSyncRep Revision (Tagged CSL.ByteString)
                    | SyncDone Crc
                    | DoCheckpoint Revision
+                   | DoSyncCheckpoint Revision CSL.ByteString
                    | MayQuit
                    | MasterQuit
                   deriving (Show)
@@ -93,12 +94,13 @@ data SlaveMessage = NewSlave Int
 
 instance Serialize MasterMessage where
     put msg = case msg of
-        DoRep r i d   -> putWord8 0 >> put r >> put i >> put d
-        DoSyncRep r d -> putWord8 1 >> put r >> put d
-        SyncDone c    -> putWord8 2 >> put c
-        DoCheckpoint r -> putWord8 3 >> put r
-        MayQuit       -> putWord8 8
-        MasterQuit    -> putWord8 9
+        DoRep r i d          -> putWord8 0 >> put r >> put i >> put d
+        DoSyncRep r d        -> putWord8 1 >> put r >> put d
+        SyncDone c           -> putWord8 2 >> put c
+        DoCheckpoint r       -> putWord8 3 >> put r
+        DoSyncCheckpoint r d -> putWord8 4 >> put r >> put d
+        MayQuit              -> putWord8 8
+        MasterQuit           -> putWord8 9
     get = do 
         tag <- getWord8
         case tag of
@@ -106,6 +108,7 @@ instance Serialize MasterMessage where
             1 -> liftM2 DoSyncRep get get
             2 -> liftM SyncDone get
             3 -> liftM DoCheckpoint get
+            4 -> liftM2 DoSyncCheckpoint get get
             8 -> return MayQuit
             9 -> return MasterQuit
             _ -> error $ "Data.Serialize.get failed for MasterMessage: invalid tag " ++ show tag

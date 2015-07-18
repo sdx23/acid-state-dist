@@ -44,6 +44,7 @@ import Data.Serialize (Serialize(..), put, get,
 
 import Data.Acid
 import Data.Acid.Core
+import Data.Acid.Common
 import Data.Acid.Abstract
 import Data.Acid.Local
 import Data.Acid.Log
@@ -168,6 +169,8 @@ slaveRequestHandler slaveState@SlaveState{..} = do
                      case mmsg of
                         -- We are sent an Update to replicate.
                         DoRep r i d -> queueRepItem slaveState (SRIUpdate r i d)
+                        -- We are sent a Checkpoint for synchronization.
+                        DoSyncCheckpoint r d -> replicateSyncCp slaveState r d 
                         -- We are sent an Update to replicate for synchronization.
                         DoSyncRep r d -> replicateSyncUpdate slaveState r d 
                         -- Master done sending all synchronization Updates.
@@ -220,6 +223,19 @@ slaveReplicationHandler slaveState@SlaveState{..} = do
         loop
         -- signal that we're done
         void $ takeMVar slaveRepThreadId
+
+-- | Replicate Sync-Checkpoints directly.
+replicateSyncCp :: SlaveState st -> Revision -> CSL.ByteString -> IO ()
+replicateSyncCp slaveState rev encoded = undefined
+    --core <- mkCore (eventsToMethods acidEvents) encoded
+    -- TODO
+    -- actually it might be best, to:
+    --      close the local state
+    --      append the checkpoint to checkpointLog
+    --      open the local state anew
+    -- in between no updates are possible, however.
+    -- also we can't simply substitute the localState within slaveState
+
 
 -- | Replicate Sync-Updates directly.
 replicateSyncUpdate slaveState rev event = replicateUpdate slaveState rev Nothing event True

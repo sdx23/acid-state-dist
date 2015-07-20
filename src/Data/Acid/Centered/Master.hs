@@ -13,7 +13,6 @@
 
 -}
 {- big chunks still todo:
-    o checkpoints / archives
     o authentification
     o encryption
 -}
@@ -27,7 +26,6 @@ module Data.Acid.Centered.Master
 import Data.Typeable
 import Data.SafeCopy
 
--- some not exported by acid-state, export and reinstall: Core, Abstract, Log
 import Data.Acid
 import Data.Acid.Core
 import Data.Acid.Abstract
@@ -137,7 +135,6 @@ removeFromNodeStatus nodeStatus ident =
 updateNodeStatus :: MasterState st -> NodeIdentity -> Int -> IO ()
 updateNodeStatus MasterState{..} ident r =
     modifyMVar_ nodeStatus $ \ns -> do
-        -- todo: there should be a fancy way to do this
         when (M.findWithDefault 0 ident ns /= (r - 1)) $
             error $ "Invalid increment of node status " ++ show ns ++ " -> " ++ show r
         let rs = M.adjust (+1) ident ns
@@ -149,7 +146,6 @@ updateNodeStatus MasterState{..} ident r =
 -- | Connect a new Slave by getting it up-to-date,
 --   i.e. send all past events as Updates. This is fire&forget.
 --   todo: check HWM
---   todo: check sync validity
 connectNode :: (IsAcidic st, Typeable st) => MasterState st -> NodeIdentity -> Revision -> IO ()
 connectNode MasterState{..} i revision =
     withMVar masterRevision $ \mr ->
@@ -218,7 +214,6 @@ receiveFrame sock = do
     let ident = head list
     let msg = list !! 1
     case decode msg of
-        -- todo: pass on exceptions
         Left str -> error $ "Data.Serialize.decode failed on SlaveMessage: " ++ show msg
         Right smsg -> do
             debug $ "Received from [" ++ CS.unpack ident ++ "]: "
@@ -295,7 +290,6 @@ closeMasterState MasterState{..} = do
         closeAcidState localState
 
 -- | Update on master site.
--- todo: this implementation is only valid for Slaves not sending Updates.
 scheduleMasterUpdate :: UpdateEvent event => MasterState (EventState event) -> event -> IO (MVar (EventResult event))
 scheduleMasterUpdate masterState@MasterState{..} event = do
         debug "Update by Master."
@@ -309,12 +303,6 @@ scheduleMasterUpdate masterState@MasterState{..} event = do
             let encoded = runPutLazy (safePut event)
             queueRepItem masterState (RIUpdate (methodTag event, encoded) (Left callback))
             return result
-
--- | Remove nodes that were not responsive
-removeLaggingNodes :: MasterState st -> IO ()
-removeLaggingNodes MasterState{..} =
-    -- todo: send the node a quit notice
-    withMVar masterRevision $ \mr -> modifyMVar_ nodeStatus $ return . M.filter (== mr)
 
 -- | Queue an RepItem (originating from the Master itself of an Slave via zmq)
 queueRepItem :: MasterState st -> ReplicationItem -> IO ()
@@ -344,9 +332,6 @@ masterReplicationHandler MasterState{..} = do
                     createCheckpoint localState
                     withMVar nodeStatus $ \ns -> do
                         debug "Sending Checkpoint Request to Slaves."
-                        -- todo: we must split up revisions into
-                        -- (checkpoints,updates) and only replicate necessary
-                        -- updates after checkpoints on reconnect
                         withMVar masterRevision $ \mr ->
                             forM_ (M.keys ns) $ sendCheckpoint zmqSocket mr
                     loop
@@ -381,8 +366,6 @@ masterReplicationHandler MasterState{..} = do
 createMasterCheckpoint :: MasterState st -> IO ()
 createMasterCheckpoint masterState@MasterState{..} = do
     debug "Checkpoint."
-    -- We need to be careful to ensure that a checkpoint is created from the
-    -- same revision on all nodes. At this time the Core needs to be locked.
     unlocked <- isEmptyMVar masterStateLock
     unless unlocked $ error "State is locked."
     queueRepItem masterState RICheckpoint
@@ -409,5 +392,4 @@ toAcidState master
               , closeAcidState     = closeMasterState master
               , acidSubState       = mkAnyState master
               }
-
 

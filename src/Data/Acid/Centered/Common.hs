@@ -76,6 +76,7 @@ debug = L.with debugLock . hPutStrLn stderr
 -- to turn off debug use
 --debug _ = return ()
 
+-- | Messages the Master sends to Slaves.
 data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | DoSyncRep Revision (Tagged CSL.ByteString)
                    | SyncDone Crc
@@ -86,6 +87,7 @@ data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | MasterQuit
                   deriving (Show)
 
+-- | Messages Slaves sends to the Master.
 data SlaveMessage = NewSlave Int
                   | RepDone Int
                   | RepError
@@ -141,6 +143,6 @@ crcOfState state = do
         let encoded = runPutLazy (safePut st)
         return $ crc16 encoded
 
--- | By polling, wait until predicate true.
+-- | By polling, wait until predicate fulfilled.
 waitPoll :: Int -> IO Bool -> IO ()
 waitPoll t p = p >>= \e -> unless e $ threadDelay t >> waitPoll t p

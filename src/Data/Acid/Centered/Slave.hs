@@ -15,18 +15,6 @@
 
 --------------------------------------------------------------------------------
 -- SLAVE part
---
--- What does a Slave do?
---      open its localState
---      check at which revision it is
---      request to be updated -> sync happens
---      whilst syncing normal updates accumulate in RepChan
---
---      do Queries locally
---      deny Updates (for now)
---      receive messages from master and respond
---
---      notify master he's out, close local
 
 module Data.Acid.Centered.Slave
     (
@@ -280,7 +268,6 @@ replicateUpdate SlaveState{..} rev reqId event syncing = do
                     Just rid -> modifyMVar slaveRequests $ \srs -> do
                         debug $ "This is the Update for Request " ++ show rid
                         callback <- fromMaybe (error $ "Callback not found: " ++ show rid) (M.lookup rid srs)
-                        -- todo: we remember it, clean it up later
                         let nsrs = M.delete rid srs
                         return (nsrs, callback)
                 -- send reply: we're done

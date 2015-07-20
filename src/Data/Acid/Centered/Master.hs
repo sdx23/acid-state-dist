@@ -20,6 +20,7 @@
 module Data.Acid.Centered.Master
     (
       openMasterState
+    , createArchiveGlobally
     , MasterState(..)
     ) where
 
@@ -91,6 +92,7 @@ type Callback = IO ()
 data ReplicationItem =
       RIEnd
     | RICheckpoint
+    | RIArchive
     | RIUpdate (Tagged CSL.ByteString) (Either Callback (RequestID, NodeIdentity))
 
 -- | The request handler on master node. Does
@@ -203,6 +205,9 @@ sendUpdate sock revision reqId update = sendToSlave sock (DoRep revision reqId u
 
 sendCheckpoint :: MVar (Socket Router) -> Revision -> NodeIdentity -> IO ()
 sendCheckpoint sock revision = sendToSlave sock (DoCheckpoint revision)
+
+sendArchive :: MVar (Socket Router) -> Revision -> NodeIdentity -> IO ()
+sendArchive sock revision = sendToSlave sock (DoArchive revision)
 
 -- | Receive one Frame. A Frame consists of three messages: 
 --      sender ID, empty message, and actual content 
@@ -326,6 +331,14 @@ masterReplicationHandler MasterState{..} = do
             repItem <- readChan masterReplicationChan
             case repItem of
                 RIEnd -> return ()
+                RIArchive -> do
+                    debug "Archive globally."
+                    createArchive localState
+                    withMVar nodeStatus $ \ns -> do
+                        debug "Sending archive request to Slaves."
+                        withMVar masterRevision $ \mr ->
+                            forM_ (M.keys ns) $ sendArchive zmqSocket mr
+                    loop
                 RICheckpoint -> do
                     debug "Checkpoint on master."
                     createCheckpoint localState
@@ -334,9 +347,8 @@ masterReplicationHandler MasterState{..} = do
                         -- todo: we must split up revisions into
                         -- (checkpoints,updates) and only replicate necessary
                         -- updates after checkpoints on reconnect
-                        withMVar masterRevision $ \mr -> do
+                        withMVar masterRevision $ \mr ->
                             forM_ (M.keys ns) $ sendCheckpoint zmqSocket mr
-                            return mr
                     loop
                 RIUpdate event sink -> do
                     -- todo: temporary only one Chan, no improvement to without chan!
@@ -363,17 +375,28 @@ masterReplicationHandler MasterState{..} = do
     -- signal that we're done
     void $ takeMVar masterRepThreadId
 
--- | Create a checkpoint (on all nodes).
+-- | Create a checkpoint (on all nodes, per request).
 --   This is useful for faster resume of both the Master (at startup) and
 --   Slaves (at startup and reconnect).
 createMasterCheckpoint :: MasterState st -> IO ()
 createMasterCheckpoint masterState@MasterState{..} = do
-    debug "Checkpoint on Master."
+    debug "Checkpoint."
     -- We need to be careful to ensure that a checkpoint is created from the
     -- same revision on all nodes. At this time the Core needs to be locked.
     unlocked <- isEmptyMVar masterStateLock
     unless unlocked $ error "State is locked."
     queueRepItem masterState RICheckpoint
+
+-- | Create an archive on all nodes.
+--   Usually createArchive (local to each node) is appropriate.
+--   Also take care: Nodes that are not connected at the time, will not create
+--   an archive (on reconnect).
+createArchiveGlobally :: (IsAcidic st, Typeable st) => AcidState st -> IO ()
+createArchiveGlobally acid = do
+    debug "Archive globally."
+    let masterState = downcast acid
+    queueRepItem masterState RIArchive
+
 
 toAcidState :: IsAcidic st => MasterState st -> AcidState st
 toAcidState master 
@@ -382,7 +405,7 @@ toAcidState master
               , _query             = query $ localState master
               , queryCold          = queryCold $ localState master
               , createCheckpoint   = createMasterCheckpoint master
-              , createArchive      = undefined
+              , createArchive      = createArchive $ localState master
               , closeAcidState     = closeMasterState master 
               , acidSubState       = mkAnyState master
               }

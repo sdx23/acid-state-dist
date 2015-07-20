@@ -64,12 +64,13 @@ import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
                                 withMVar, modifyMVar, modifyMVar_,
                                 readMVar,
                                 takeMVar, putMVar)
+import Data.IORef (writeIORef)
 import Control.Monad (forever, void,
                       when, unless,
                       forM_
                      )
 import Control.Monad.STM (atomically)
-import Control.Concurrent.STM.TVar (readTVar)
+import Control.Concurrent.STM.TVar (readTVar, writeTVar)
 import qualified Control.Concurrent.Event as Event
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
 
@@ -104,6 +105,7 @@ type SlaveRequests = Map RequestID (IO ())
 data SlaveRepItem =
       SRIEnd
     | SRICheckpoint Revision
+    | SRIArchive Revision
     | SRIUpdate Revision (Maybe RequestID) (Tagged CSL.ByteString)
 
 -- | Open a local State as Slave for a Master.
@@ -175,8 +177,10 @@ slaveRequestHandler slaveState@SlaveState{..} = do
                         DoSyncRep r d -> replicateSyncUpdate slaveState r d 
                         -- Master done sending all synchronization Updates.
                         SyncDone c -> onSyncDone slaveState c
-                        -- We are sent an Checkpoint request.
+                        -- We are sent a Checkpoint request.
                         DoCheckpoint r -> queueRepItem slaveState (SRICheckpoint r) 
+                        -- We are sent an Archive request.
+                        DoArchive r -> queueRepItem slaveState (SRIArchive r) 
                         -- We are allowed to Quit.
                         MayQuit -> writeChan slaveRepChan SRIEnd
                         -- We are requested to Quit.
@@ -217,6 +221,9 @@ slaveReplicationHandler slaveState@SlaveState{..} = do
                     SRICheckpoint r -> do
                         repCheckpoint slaveState r
                         loop
+                    SRIArchive r -> do
+                        repArchive slaveState r
+                        loop
                     SRIUpdate r i d -> do
                         replicateUpdate slaveState r i d False
                         loop
@@ -229,11 +236,26 @@ replicateSyncCp :: (IsAcidic st, Typeable st) =>
         SlaveState st -> Revision -> CSL.ByteString -> IO ()
 replicateSyncCp slaveState@SlaveState{..} rev encoded = do
     st <- decodeCheckpoint encoded
-    let core = localCore $ downcast slaveLocalState
-    modifyCoreState_ core (replaceState st)
-    modifyMVar_ slaveRevision $ return . const rev
+    let lst = downcast slaveLocalState
+    let core = localCore lst
+    modifyMVar_ slaveRevision $ \sr -> do
+        when (sr > rev) $ error "Revision mismatch for checkpoint: Slave is newer."
+        -- todo: check
+        modifyCoreState_ core $ \_ -> do
+            writeIORef (localCopy lst) st
+            createCpFake lst encoded rev
+            adjustEventLogId lst rev
+            return st
+        return rev
     where
-        replaceState s _ = return s
+        adjustEventLogId l r = do
+            atomically $ writeTVar (logNextEntryId (localEvents l)) rev
+            cutFileLog (localEvents l)
+        createCpFake l e r = do
+            mvar <- newEmptyMVar
+            pushAction (localEvents l) $
+                pushEntry (localCheckpoints l) (Checkpoint r e) (putMVar mvar ())
+            takeMVar mvar
         decodeCheckpoint e =
             case runGetLazy safeGet e of
                 Left msg  -> error $ "Checkpoint could not be decoded: " ++ msg
@@ -278,6 +300,13 @@ repCheckpoint SlaveState{..} rev = do
     withMVar slaveRevision $ \nr ->
         -- create checkpoint
         createCheckpoint slaveLocalState
+
+repArchive :: SlaveState st -> Revision -> IO ()
+repArchive SlaveState{..} rev = do
+    debug "Got Archive request."
+    -- todo: at right revision?
+    withMVar slaveRevision $ \nr ->
+        createArchive slaveLocalState
 
 
 -- | Update on slave site. 
@@ -340,8 +369,8 @@ slaveToAcidState slaveState
               , scheduleColdUpdate = undefined
               , _query             = query $ slaveLocalState slaveState
               , queryCold          = queryCold $ slaveLocalState slaveState
-              , createCheckpoint   = undefined
-              , createArchive      = undefined
+              , createCheckpoint   = createCheckpoint $ slaveLocalState slaveState
+              , createArchive      = createArchive $ slaveLocalState slaveState
               , closeAcidState     = liberateState slaveState 
               , acidSubState       = mkAnyState slaveState
               }

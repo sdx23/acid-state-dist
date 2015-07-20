@@ -81,6 +81,7 @@ data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | SyncDone Crc
                    | DoCheckpoint Revision
                    | DoSyncCheckpoint Revision CSL.ByteString
+                   | DoArchive Revision
                    | MayQuit
                    | MasterQuit
                   deriving (Show)
@@ -99,6 +100,7 @@ instance Serialize MasterMessage where
         SyncDone c           -> putWord8 2 >> put c
         DoCheckpoint r       -> putWord8 3 >> put r
         DoSyncCheckpoint r d -> putWord8 4 >> put r >> put d
+        DoArchive r          -> putWord8 5 >> put r
         MayQuit              -> putWord8 8
         MasterQuit           -> putWord8 9
     get = do 
@@ -109,6 +111,7 @@ instance Serialize MasterMessage where
             2 -> liftM SyncDone get
             3 -> liftM DoCheckpoint get
             4 -> liftM2 DoSyncCheckpoint get get
+            5 -> liftM DoArchive get
             8 -> return MayQuit
             9 -> return MasterQuit
             _ -> error $ "Data.Serialize.get failed for MasterMessage: invalid tag " ++ show tag

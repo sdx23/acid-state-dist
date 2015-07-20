@@ -2,6 +2,7 @@
 
 import Data.Acid
 import Data.Acid.Centered
+import Data.Acid.Centered.Master (createArchiveGlobally)
 import Data.SafeCopy
 import Data.Typeable
 
@@ -26,6 +27,9 @@ main = do
             ('c':_) -> do
                 createCheckpoint acid
                 putStrLn "Checkpoint generated."
+            ('a':_) -> do
+                createArchiveGlobally acid
+                putStrLn "Archive generated."
             ('q':_) -> do
                 val <- query acid GetState
                 putStrLn $ "Current value: " ++ show val
@@ -43,6 +47,7 @@ usage :: String
 usage = "Possible commands:\
         \\n  x    exit\
         \\n  c    checkpoint\
+        \\n  a    archive globally\
         \\n  q    query the state\
         \\n  u v  update to value v\
         \\n  i    increment\

@@ -161,7 +161,7 @@ connectNode MasterState{..} i revision =
             if lastCpRev > revision then do
                 -- send last checkpoint and events from after then
                 sendSyncCheckpoint zmqSocket lastCp i
-                pastUpdates <- getPastUpdates localState (lastCpRev + 1)
+                pastUpdates <- getPastUpdates localState lastCpRev
                 forM_ pastUpdates $ \(r, u) -> sendSyncUpdate zmqSocket r u i
             else do
                 -- just the events

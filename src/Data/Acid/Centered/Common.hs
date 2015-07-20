@@ -103,7 +103,7 @@ instance Serialize MasterMessage where
         DoArchive r          -> putWord8 5 >> put r
         MayQuit              -> putWord8 8
         MasterQuit           -> putWord8 9
-    get = do 
+    get = do
         tag <- getWord8
         case tag of
             0 -> liftM3 DoRep get get get

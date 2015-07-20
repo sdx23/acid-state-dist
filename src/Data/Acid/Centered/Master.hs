@@ -7,7 +7,7 @@
   Maintainer  :  max.voit+hdv@with-eyes.net
   Portability :  ?
 
-  This module provides a replication backend for acid state, centered around 
+  This module provides a replication backend for acid state, centered around
   the master. Thus in case of partitions no updates may be accepted and the
   system blocks.
 
@@ -30,7 +30,7 @@ import Data.SafeCopy
 -- some not exported by acid-state, export and reinstall: Core, Abstract, Log
 import Data.Acid
 import Data.Acid.Core
-import Data.Acid.Abstract 
+import Data.Acid.Abstract
 import Data.Acid.Advanced
 import Data.Acid.Local
 import Data.Acid.Log
@@ -44,14 +44,14 @@ import Data.Acid.Centered.Common
 import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread)
 import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan)
 import Control.Monad (when, unless, void,
-                      forever, forM_, 
+                      forever, forM_,
                       liftM, liftM2)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
 
 import System.ZMQ4 (Context, Socket, Router(..), Receiver, Flag(..),
                     setReceiveHighWM, setSendHighWM, restrict,
-                    context, term, socket, close, 
+                    context, term, socket, close,
                     bind, unbind,
                     poll, Poll(..), Event(..),
                     waitRead,
@@ -73,7 +73,7 @@ import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
 
 --------------------------------------------------------------------------------
 
-data MasterState st 
+data MasterState st
     = MasterState { localState :: AcidState st
                   , nodeStatus :: MVar NodeStatus
                   , masterStateLock :: MVar ()
@@ -98,7 +98,7 @@ data ReplicationItem =
 -- | The request handler on master node. Does
 --      o handle receiving requests from nodes,
 --      o answering as needed (old updates),
---      o bookkeeping on node states. 
+--      o bookkeeping on node states.
 masterRequestHandler :: (IsAcidic st, Typeable st) => MasterState st -> IO ()
 masterRequestHandler masterState@MasterState{..} = do
     mtid <- myThreadId
@@ -135,7 +135,7 @@ removeFromNodeStatus nodeStatus ident =
 
 -- | Update the NodeStatus after a node has replicated an Update.
 updateNodeStatus :: MasterState st -> NodeIdentity -> Int -> IO ()
-updateNodeStatus MasterState{..} ident r = 
+updateNodeStatus MasterState{..} ident r =
     modifyMVar_ nodeStatus $ \ns -> do
         -- todo: there should be a fancy way to do this
         when (M.findWithDefault 0 ident ns /= (r - 1)) $
@@ -151,8 +151,8 @@ updateNodeStatus MasterState{..} ident r =
 --   todo: check HWM
 --   todo: check sync validity
 connectNode :: (IsAcidic st, Typeable st) => MasterState st -> NodeIdentity -> Revision -> IO ()
-connectNode MasterState{..} i revision = 
-    withMVar masterRevision $ \mr -> 
+connectNode MasterState{..} i revision =
+    withMVar masterRevision $ \mr ->
         modifyMVar_ nodeStatus $ \ns -> do
             -- todo: do we need to lock masterState for crc?
             crc <- crcOfState localState
@@ -197,11 +197,11 @@ sendSyncCheckpoint sock (Checkpoint cr encoded) =
 
 -- | Send one (encoded) Update to a Slave.
 sendSyncUpdate :: MVar (Socket Router) -> Revision -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
-sendSyncUpdate sock revision update = sendToSlave sock (DoSyncRep revision update) 
-    
+sendSyncUpdate sock revision update = sendToSlave sock (DoSyncRep revision update)
+
 -- | Send one (encoded) Update to a Slave.
 sendUpdate :: MVar (Socket Router) -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
-sendUpdate sock revision reqId update = sendToSlave sock (DoRep revision reqId update) 
+sendUpdate sock revision reqId update = sendToSlave sock (DoRep revision reqId update)
 
 sendCheckpoint :: MVar (Socket Router) -> Revision -> NodeIdentity -> IO ()
 sendCheckpoint sock revision = sendToSlave sock (DoCheckpoint revision)
@@ -209,8 +209,8 @@ sendCheckpoint sock revision = sendToSlave sock (DoCheckpoint revision)
 sendArchive :: MVar (Socket Router) -> Revision -> NodeIdentity -> IO ()
 sendArchive sock revision = sendToSlave sock (DoArchive revision)
 
--- | Receive one Frame. A Frame consists of three messages: 
---      sender ID, empty message, and actual content 
+-- | Receive one Frame. A Frame consists of three messages:
+--      sender ID, empty message, and actual content
 receiveFrame :: (Receiver t) => Socket t -> IO (NodeIdentity, SlaveMessage)
 receiveFrame sock = do
     list <- receiveMulti sock
@@ -228,7 +228,7 @@ receiveFrame sock = do
 -- | Open the master state.
 openMasterState :: (IsAcidic st, Typeable st) =>
                PortNumber   -- ^ port to bind to
-            -> st           -- ^ initial state 
+            -> st           -- ^ initial state
             -> IO (AcidState st)
 openMasterState port initialState = do
         debug "opening master state"
@@ -288,7 +288,7 @@ closeMasterState MasterState{..} = do
         -- cleanup zmq
         debug "Closing down zmq."
         withMVar zmqSocket $ \sock -> do
-            unbind sock zmqAddr 
+            unbind sock zmqAddr
             close sock
         term zmqContext
         -- cleanup local state
@@ -302,19 +302,19 @@ scheduleMasterUpdate masterState@MasterState{..} event = do
         unlocked <- isEmptyMVar masterStateLock
         if not unlocked then error "State is locked!"
         else do
-            result <- newEmptyMVar 
+            result <- newEmptyMVar
             let callback = do
                     hd <- scheduleUpdate localState event
                     void $ forkIO (putMVar result =<< takeMVar hd)
-            let encoded = runPutLazy (safePut event) 
+            let encoded = runPutLazy (safePut event)
             queueRepItem masterState (RIUpdate (methodTag event, encoded) (Left callback))
             return result
-             
+
 -- | Remove nodes that were not responsive
 removeLaggingNodes :: MasterState st -> IO ()
-removeLaggingNodes MasterState{..} = 
+removeLaggingNodes MasterState{..} =
     -- todo: send the node a quit notice
-    withMVar masterRevision $ \mr -> modifyMVar_ nodeStatus $ return . M.filter (== mr) 
+    withMVar masterRevision $ \mr -> modifyMVar_ nodeStatus $ return . M.filter (== mr)
 
 -- | Queue an RepItem (originating from the Master itself of an Slave via zmq)
 queueRepItem :: MasterState st -> ReplicationItem -> IO ()
@@ -355,20 +355,20 @@ masterReplicationHandler MasterState{..} = do
                     -- local part
                     withMVar masterRevision $ \mr ->
                         debug $ "Replicating Update myself to " ++ show (mr + 1)
-                    case sink of 
-                        Left callback   -> callback 
+                    case sink of
+                        Left callback   -> callback
                         _               -> void $ scheduleColdUpdate localState event
                     -- remote part
                     withMVar nodeStatus $ \ns -> do
                         debug $ "Sending Update to Slaves, there are " ++ show (M.size ns)
                         modifyMVar_ masterRevision $ \mrOld -> do
-                            let mr = mrOld + 1 
+                            let mr = mrOld + 1
                             case sink of
-                                Left _ -> forM_ (M.keys ns) $ sendUpdate zmqSocket mr Nothing event 
+                                Left _ -> forM_ (M.keys ns) $ sendUpdate zmqSocket mr Nothing event
                                 Right (reqID, reqNodeIdent) -> do
-                                    let noReqSlaves = filter (/= reqNodeIdent) $ M.keys ns 
+                                    let noReqSlaves = filter (/= reqNodeIdent) $ M.keys ns
                                     sendUpdate zmqSocket mr (Just reqID) event reqNodeIdent
-                                    forM_ noReqSlaves $ sendUpdate zmqSocket mr Nothing event 
+                                    forM_ noReqSlaves $ sendUpdate zmqSocket mr Nothing event
                             return mr
                     loop
     loop
@@ -399,14 +399,14 @@ createArchiveGlobally acid = do
 
 
 toAcidState :: IsAcidic st => MasterState st -> AcidState st
-toAcidState master 
-  = AcidState { _scheduleUpdate    = scheduleMasterUpdate master 
+toAcidState master
+  = AcidState { _scheduleUpdate    = scheduleMasterUpdate master
               , scheduleColdUpdate = scheduleColdUpdate $ localState master
               , _query             = query $ localState master
               , queryCold          = queryCold $ localState master
               , createCheckpoint   = createMasterCheckpoint master
               , createArchive      = createArchive $ localState master
-              , closeAcidState     = closeMasterState master 
+              , closeAcidState     = closeMasterState master
               , acidSubState       = mkAnyState master
               }
 

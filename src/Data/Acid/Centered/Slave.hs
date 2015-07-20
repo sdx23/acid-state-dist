@@ -25,7 +25,7 @@
 --      do Queries locally
 --      deny Updates (for now)
 --      receive messages from master and respond
---      
+--
 --      notify master he's out, close local
 
 module Data.Acid.Centered.Slave
@@ -55,12 +55,12 @@ import System.ZMQ4 (Context, Socket, Dealer(..), Receiver, Flag(..),
                     setReceiveHighWM, setSendHighWM, restrict,
                     waitRead,
                     poll, Poll(..), Event(..),
-                    context, term, socket, close, 
+                    context, term, socket, close,
                     connect, disconnect,
                     send, receive)
 
 import Control.Concurrent (forkIO, threadDelay, ThreadId, myThreadId, killThread)
-import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar, 
+import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
                                 withMVar, modifyMVar, modifyMVar_,
                                 readMVar,
                                 takeMVar, putMVar)
@@ -84,7 +84,7 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 
 --------------------------------------------------------------------------------
 
-data SlaveState st 
+data SlaveState st
     = SlaveState { slaveLocalState :: AcidState st
                  , slaveRepChan :: Chan SlaveRepItem
                  , slaveSyncDone :: Event.Event
@@ -149,11 +149,11 @@ enslaveState address port initialState = do
                                     , slaveZmqAddr = addr
                                     , slaveZmqSocket = msock
                                     }
-        forkIO $ slaveRequestHandler slaveState 
-        forkIO $ slaveReplicationHandler slaveState 
-        return $ slaveToAcidState slaveState 
+        forkIO $ slaveRequestHandler slaveState
+        forkIO $ slaveReplicationHandler slaveState
+        return $ slaveToAcidState slaveState
 
--- | Replication handler of the Slave. 
+-- | Replication handler of the Slave.
 slaveRequestHandler :: (IsAcidic st, Typeable st) => SlaveState st -> IO ()
 slaveRequestHandler slaveState@SlaveState{..} = do
     mtid <- myThreadId
@@ -172,15 +172,15 @@ slaveRequestHandler slaveState@SlaveState{..} = do
                         -- We are sent an Update to replicate.
                         DoRep r i d -> queueRepItem slaveState (SRIUpdate r i d)
                         -- We are sent a Checkpoint for synchronization.
-                        DoSyncCheckpoint r d -> replicateSyncCp slaveState r d 
+                        DoSyncCheckpoint r d -> replicateSyncCp slaveState r d
                         -- We are sent an Update to replicate for synchronization.
-                        DoSyncRep r d -> replicateSyncUpdate slaveState r d 
+                        DoSyncRep r d -> replicateSyncUpdate slaveState r d
                         -- Master done sending all synchronization Updates.
                         SyncDone c -> onSyncDone slaveState c
                         -- We are sent a Checkpoint request.
-                        DoCheckpoint r -> queueRepItem slaveState (SRICheckpoint r) 
+                        DoCheckpoint r -> queueRepItem slaveState (SRICheckpoint r)
                         -- We are sent an Archive request.
-                        DoArchive r -> queueRepItem slaveState (SRIArchive r) 
+                        DoArchive r -> queueRepItem slaveState (SRIArchive r)
                         -- We are allowed to Quit.
                         MayQuit -> writeChan slaveRepChan SRIEnd
                         -- We are requested to Quit.
@@ -271,22 +271,22 @@ replicateSyncUpdate slaveState rev event = replicateUpdate slaveState rev Nothin
 replicateUpdate :: SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> Bool -> IO ()
 replicateUpdate SlaveState{..} rev reqId event syncing = do
         debug $ "Got an Update to replicate " ++ show rev
-        modifyMVar_ slaveRevision $ \nr -> if rev - 1 == nr 
+        modifyMVar_ slaveRevision $ \nr -> if rev - 1 == nr
             then do
-                -- commit / run it locally 
+                -- commit / run it locally
                 case reqId of
-                    Nothing -> 
-                        void $ scheduleColdUpdate slaveLocalState event 
+                    Nothing ->
+                        void $ scheduleColdUpdate slaveLocalState event
                     Just rid -> modifyMVar slaveRequests $ \srs -> do
                         debug $ "This is the Update for Request " ++ show rid
                         callback <- fromMaybe (error $ "Callback not found: " ++ show rid) (M.lookup rid srs)
                         -- todo: we remember it, clean it up later
                         let nsrs = M.delete rid srs
-                        return (nsrs, callback) 
+                        return (nsrs, callback)
                 -- send reply: we're done
                 unless syncing $ sendToMaster slaveZmqSocket $ RepDone rev
                 return rev
-            else do 
+            else do
                 sendToMaster slaveZmqSocket RepError
                 error $ "Replication failed at revision " ++ show rev ++ " -> " ++ show nr
                 return nr
@@ -309,8 +309,8 @@ repArchive SlaveState{..} rev = do
         createArchive slaveLocalState
 
 
--- | Update on slave site. 
---      The steps are:  
+-- | Update on slave site.
+--      The steps are:
 --      - Request Update from Master
 --      - Master issues Update with same RequestID
 --      - repHandler replicates and puts result in MVar
@@ -324,7 +324,7 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
             let encoded = runPutLazy (safePut event)
             sendToMaster slaveZmqSocket $ ReqUpdate reqId (methodTag event, encoded)
             let callback = do
-                    hd <- scheduleUpdate slaveLocalState event 
+                    hd <- scheduleUpdate slaveLocalState event
                     void $ forkIO $ putMVar result =<< takeMVar hd
             return $ M.insert reqId callback srs
         return result
@@ -355,7 +355,7 @@ liberateState SlaveState{..} = do
         -- cleanup zmq
         debug "Closing down zmq."
         withMVar slaveZmqSocket $ \s -> do
-            disconnect s slaveZmqAddr 
+            disconnect s slaveZmqAddr
             close s
         term slaveZmqContext
         -- cleanup local state
@@ -364,13 +364,13 @@ liberateState SlaveState{..} = do
 
 
 slaveToAcidState :: IsAcidic st => SlaveState st -> AcidState st
-slaveToAcidState slaveState 
-  = AcidState { _scheduleUpdate    = scheduleSlaveUpdate slaveState 
+slaveToAcidState slaveState
+  = AcidState { _scheduleUpdate    = scheduleSlaveUpdate slaveState
               , scheduleColdUpdate = undefined
               , _query             = query $ slaveLocalState slaveState
               , queryCold          = queryCold $ slaveLocalState slaveState
               , createCheckpoint   = createCheckpoint $ slaveLocalState slaveState
               , createArchive      = createArchive $ slaveLocalState slaveState
-              , closeAcidState     = liberateState slaveState 
+              , closeAcidState     = liberateState slaveState
               , acidSubState       = mkAnyState slaveState
               }

@@ -33,7 +33,7 @@ queryState = do HelloWorldState string <- ask
 $(makeAcidic ''HelloWorldState ['writeState, 'queryState])
 
 main :: IO ()
-main = do acid <- openMasterState 3333 (HelloWorldState "Hello world")
+main = do acid <- openMasterState "127.0.0.1" 3333 (HelloWorldState "Hello world")
           putStrLn "Possible commands: x for exit; q for query; uString for update;"
           forever $ do
               input <- getLine

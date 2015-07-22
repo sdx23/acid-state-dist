@@ -19,6 +19,7 @@
 module Data.Acid.Centered.Slave
     (
       enslaveState
+    , enslaveStateFrom
     , SlaveState(..)
     )  where
 
@@ -46,6 +47,7 @@ import System.ZMQ4 (Context, Socket, Dealer(..), Receiver, Flag(..),
                     context, term, socket, close,
                     connect, disconnect,
                     send, receive)
+import System.FilePath ( (</>) )
 
 import Control.Concurrent (forkIO, threadDelay, ThreadId, myThreadId, killThread)
 import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
@@ -96,15 +98,24 @@ data SlaveRepItem =
     | SRIArchive Revision
     | SRIUpdate Revision (Maybe RequestID) (Tagged CSL.ByteString)
 
--- | Open a local State as Slave for a Master.
 enslaveState :: (IsAcidic st, Typeable st) =>
             String          -- ^ hostname of the Master
          -> PortNumber      -- ^ port to connect to
          -> st              -- ^ initial state
          -> IO (AcidState st)
-enslaveState address port initialState = do
+enslaveState address port initialState =
+    enslaveStateFrom ("state" </> show (typeOf initialState)) address port initialState
+
+-- | Open a local State as Slave for a Master.
+enslaveStateFrom :: (IsAcidic st, Typeable st) =>
+            FilePath        -- ^ location of the local state files.
+         -> String          -- ^ hostname of the Master
+         -> PortNumber      -- ^ port to connect to
+         -> st              -- ^ initial state
+         -> IO (AcidState st)
+enslaveStateFrom directory address port initialState = do
         -- local
-        lst <- openLocalState initialState
+        lst <- openLocalStateFrom directory initialState
         let levs = localEvents $ downcast lst
         lrev <- atomically $ readTVar $ logNextEntryId levs
         rev <- newMVar lrev

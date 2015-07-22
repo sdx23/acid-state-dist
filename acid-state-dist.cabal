@@ -73,6 +73,7 @@ library
                        stm,
                        semigroups,
                        safe,
+                       filepath,
                        mtl
 
   -- Directories containing source files.

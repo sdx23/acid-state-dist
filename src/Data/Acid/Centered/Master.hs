@@ -54,6 +54,7 @@ import System.ZMQ4 (Context, Socket, Router(..), Receiver, Flag(..),
                     poll, Poll(..), Event(..),
                     waitRead,
                     sendMulti, receiveMulti)
+import System.FilePath ( (</>) )
 
 import qualified Data.Map as M
 import Data.Map (Map)
@@ -222,20 +223,31 @@ receiveFrame sock = do
 
 -- | Open the master state.
 openMasterState :: (IsAcidic st, Typeable st) =>
-               PortNumber   -- ^ port to bind to
+               String       -- ^ address to bind (useful to listen on specific interfaces only)
+            -> PortNumber   -- ^ port to bind to
             -> st           -- ^ initial state
             -> IO (AcidState st)
-openMasterState port initialState = do
+openMasterState address port initialState =
+    openMasterStateFrom ("state" </> show (typeOf initialState)) address port initialState
+
+-- | Open the master state from a specific location.
+openMasterStateFrom :: (IsAcidic st, Typeable st) =>
+               FilePath     -- ^ location of the local state files
+            -> String       -- ^ address to bind (useful to listen on specific interfaces only)
+            -> PortNumber   -- ^ port to bind to
+            -> st           -- ^ initial state
+            -> IO (AcidState st)
+openMasterStateFrom directory address port initialState = do
         debug "opening master state"
         -- local
-        lst <- openLocalState initialState
+        lst <- openLocalStateFrom directory initialState
         let levs = localEvents $ downcast lst
         lrev <- atomically $ readTVar $ logNextEntryId levs
         rev <- newMVar lrev
         repChan <- newChan
         ns <- newMVar M.empty
         -- remote
-        let addr = "tcp://*:" ++ show port
+        let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
         sock <- socket ctx Router
         setReceiveHighWM (restrict (100*1000)) sock

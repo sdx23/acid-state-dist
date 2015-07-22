@@ -15,7 +15,7 @@ import IntCommon
 -- actual test
 main :: IO ()
 main = do
-    acid <- openMasterState 3333 (IntState 0)
+    acid <- openMasterState "127.0.0.1" 3333 (IntState 0)
     putStrLn usage
     forever $ do
         input <- getLine

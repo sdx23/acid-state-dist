@@ -89,4 +89,7 @@ test-suite simple
   ghc-options:      -Wall
   default-language: Haskell2010
   build-depends:    base,
+                    mtl,
+                    safecopy,
+                    acid-state,
                     acid-state-dist

@@ -19,6 +19,7 @@
 module Data.Acid.Centered.Master
     (
       openMasterState
+    , openMasterStateFrom
     , createArchiveGlobally
     , MasterState(..)
     ) where

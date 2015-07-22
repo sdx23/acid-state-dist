@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveDataTypeable, RecordWildCards, OverloadedStrings #-}
 --------------------------------------------------------------------------------
 {- |
   Module      :  Data.Acid.Centered
@@ -15,8 +14,10 @@ module Data.Acid.Centered
     (
       PortNumber(..)
     , openMasterState
+    , openMasterStateFrom
     , MasterState(..)
     , enslaveState
+    , enslaveStateFrom
     , SlaveState(..)
     ) where
 

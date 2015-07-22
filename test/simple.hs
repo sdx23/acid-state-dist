@@ -2,31 +2,31 @@
 
 import Data.Acid
 import Data.Acid.Centered
-import Data.Acid.Centered.Master (createArchiveGlobally)
-import Data.SafeCopy
-import Data.Typeable
+--import Data.SafeCopy
+--import Data.Typeable
 
-import Control.Monad (forever, forM_)
+import Control.Monad (void)
 import Control.Concurrent
 import System.Exit
 
 -- state structures
 import IntCommon
 
+delaySec :: Int -> IO ()
 delaySec n = threadDelay $ n*1000*1000
 
 -- actual test
 master :: IO ()
 master = do
-    acid <- openMasterState 3333 (IntState 0)
+    acid <- openMasterStateFrom "state/simple/m" "127.0.0.1" 3333 (IntState 0)
     update acid (SetState 23)
-    delaySec 1
+    delaySec 10
     closeAcidState acid
 
 slave :: IO ()
 slave = do
-    -- TODO other working dir or openStateFrom
-    acid <- enslaveState "localhost" 3333 (IntState 0)
+    acid <- enslaveStateFrom "state/simple/s1" "localhost" 3333 (IntState 0)
+    delaySec 2
     val <- query acid GetState
     closeAcidState acid
     if val == 23 then
@@ -36,8 +36,8 @@ slave = do
 
 main :: IO ()
 main = do
-    forkIO slave
+    void $ forkIO master
     delaySec 1
-    forkIO master
+    slave
     exitSuccess
 

@@ -52,10 +52,8 @@ library
                        Data.Acid.Centered.Master,
                        Data.Acid.Centered.Slave
 
-  other-modules:       Data.Acid.Centered.Common
-
   -- Modules included in this library but not exported.
-  -- other-modules:
+  other-modules:       Data.Acid.Centered.Common
 
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:
@@ -81,6 +79,9 @@ library
 
   -- Base language which the package is written in.
   default-language:    Haskell2010
+
+  -- Switch on debugging by "-Unodebug", off by "-Dnodebug"
+  ghc-options:      -Wall -threaded -cpp -Dnodebug
 
 ----------------------------------------------------------------------
 -- Tests

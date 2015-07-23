@@ -12,7 +12,7 @@
 
 module Data.Acid.Centered
     (
-      PortNumber(..)
+      PortNumber
     , openMasterState
     , openMasterStateFrom
     , MasterState(..)

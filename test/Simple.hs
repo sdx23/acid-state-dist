@@ -3,7 +3,7 @@
 import Data.Acid
 import Data.Acid.Centered
 
-import Control.Monad (void, when)
+import Control.Monad (when)
 import Control.Concurrent (threadDelay)
 import System.Exit (exitSuccess, exitFailure)
 import System.Directory (doesDirectoryExist, removeDirectoryRecursive)

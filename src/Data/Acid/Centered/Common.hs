@@ -20,12 +20,12 @@ module Data.Acid.Centered.Common
     , NodeRevision
     , Revision
     , RequestID
-    , PortNumber(..)
+    , PortNumber
     , SlaveMessage(..)
     , MasterMessage(..)
     ) where
 
-import Data.Acid.Core (Tagged(..), withCoreState)
+import Data.Acid.Core (Tagged, withCoreState)
 import Data.Acid.Local (localCore)
 import Data.Acid.Abstract (downcast)
 import Data.Acid (AcidState, IsAcidic)
@@ -34,8 +34,7 @@ import Data.Acid.CRC (crc16)
 import Control.Monad (liftM, liftM2, liftM3,
                       unless
                      )
-import Control.Concurrent (ThreadId, myThreadId, threadDelay)
-import Data.ByteString.Char8 (ByteString)
+import Control.Concurrent (threadDelay)
 import qualified Data.ByteString.Lazy.Char8 as CSL
 import Data.Serialize (Serialize(..), put, get,
                        putWord8, getWord8,
@@ -44,9 +43,13 @@ import Data.Serialize (Serialize(..), put, get,
 import Data.Typeable (Typeable)
 import Data.SafeCopy (safePut)
 import Data.Word (Word16)
+
+#ifdef nodebug
+#else
 import System.IO (stderr, hPutStrLn)
 import qualified Control.Concurrent.Lock as L
 import System.IO.Unsafe (unsafePerformIO)
+#endif
 
 --------------------------------------------------------------------------------
 
@@ -66,6 +69,10 @@ type RequestID = Int
 type Crc = Word16
 
 
+#ifdef nodebug
+debug :: String -> IO ()
+debug _ = return ()
+#else
 -- | Debugging without interleaving output from different threads
 {-# NOINLINE debugLock #-}
 debugLock :: L.Lock
@@ -73,8 +80,7 @@ debugLock = unsafePerformIO L.new
 
 debug :: String -> IO ()
 debug = L.with debugLock . hPutStrLn stderr
--- to turn off debug use
---debug _ = return ()
+#endif
 
 -- | Messages the Master sends to Slaves.
 data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)

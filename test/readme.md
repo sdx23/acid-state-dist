@@ -11,10 +11,6 @@ Can Slaves request Updates successfully?
 Do they also get the transaction result (not only updated state)?
 Do Master and other Slaves get the update?
 
-# CRCSuccess
-
-Is a changed state from Master replicated by Slaves and CRC check successful?
-
 # CRCFail
 
 For diverged state the CRC check must fail (unless Checkpoints were replicated).

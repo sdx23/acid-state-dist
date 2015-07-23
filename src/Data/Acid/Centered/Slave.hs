@@ -25,40 +25,29 @@ module Data.Acid.Centered.Slave
 
 import Data.Typeable
 import Data.SafeCopy
-import Data.Serialize (Serialize(..), put, get,
-                       decode, encode,
-                       runPutLazy, runPut,
-                       runGet, runGetLazy
-                      )
+import Data.Serialize (decode, encode, runPutLazy, runGetLazy)
 
 import Data.Acid
 import Data.Acid.Core
-import Data.Acid.Common
 import Data.Acid.Abstract
 import Data.Acid.Local
 import Data.Acid.Log
 
 import Data.Acid.Centered.Common
 
-import System.ZMQ4 (Context, Socket, Dealer(..), Receiver, Flag(..),
+import System.ZMQ4 (Context, Socket, Dealer(..),
                     setReceiveHighWM, setSendHighWM, restrict,
-                    waitRead,
                     poll, Poll(..), Event(..),
                     context, term, socket, close,
-                    connect, disconnect,
-                    send, receive)
+                    connect, disconnect, send, receive)
 import System.FilePath ( (</>) )
 
-import Control.Concurrent (forkIO, threadDelay, ThreadId, myThreadId, killThread)
+import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread)
 import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
                                 withMVar, modifyMVar, modifyMVar_,
-                                readMVar,
                                 takeMVar, putMVar)
 import Data.IORef (writeIORef)
-import Control.Monad (forever, void,
-                      when, unless,
-                      forM_
-                     )
+import Control.Monad (forever, void, when, unless)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar, writeTVar)
 import qualified Control.Concurrent.Event as Event
@@ -68,8 +57,6 @@ import Data.Map (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
 
-import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as CS
 import qualified Data.ByteString.Lazy.Char8 as CSL
 
 --------------------------------------------------------------------------------
@@ -124,15 +111,14 @@ enslaveStateFrom directory address port initialState = do
         lastReqId <- newMVar 0
         repChan <- newChan
         syncDone <- Event.new
-        sockLock <- newMVar ()
         reqTid <- newEmptyMVar
         repTid <- newEmptyMVar
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
         sock <- socket ctx Dealer
-        setReceiveHighWM (restrict (100*1000)) sock
-        setSendHighWM (restrict (100*1000)) sock
+        setReceiveHighWM (restrict (100*1000 :: Int)) sock
+        setSendHighWM (restrict (100*1000 :: Int)) sock
         connect sock addr
         msock <- newMVar sock
         sendToMaster msock $ NewSlave lrev
@@ -148,8 +134,8 @@ enslaveStateFrom directory address port initialState = do
                                     , slaveZmqAddr = addr
                                     , slaveZmqSocket = msock
                                     }
-        forkIO $ slaveRequestHandler slaveState
-        forkIO $ slaveReplicationHandler slaveState
+        void $ forkIO $ slaveRequestHandler slaveState
+        void $ forkIO $ slaveReplicationHandler slaveState
         return $ slaveToAcidState slaveState
 
 -- | Replication handler of the Slave.
@@ -164,7 +150,7 @@ slaveRequestHandler slaveState@SlaveState{..} = do
         unless (null $ head re) $ do
             msg <- withMVar slaveZmqSocket receive
             case decode msg of
-                Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show msg
+                Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show str
                 Right mmsg -> do
                      debug $ "Received: " ++ show mmsg
                      case mmsg of
@@ -233,7 +219,7 @@ slaveReplicationHandler slaveState@SlaveState{..} = do
 -- | Replicate Sync-Checkpoints directly.
 replicateSyncCp :: (IsAcidic st, Typeable st) =>
         SlaveState st -> Revision -> CSL.ByteString -> IO ()
-replicateSyncCp slaveState@SlaveState{..} rev encoded = do
+replicateSyncCp SlaveState{..} rev encoded = do
     st <- decodeCheckpoint encoded
     let lst = downcast slaveLocalState
     let core = localCore lst
@@ -248,8 +234,8 @@ replicateSyncCp slaveState@SlaveState{..} rev encoded = do
         return rev
     where
         adjustEventLogId l r = do
-            atomically $ writeTVar (logNextEntryId (localEvents l)) rev
-            cutFileLog (localEvents l)
+            atomically $ writeTVar (logNextEntryId (localEvents l)) r
+            void $ cutFileLog (localEvents l)
         createCpFake l e r = do
             mvar <- newEmptyMVar
             pushAction (localEvents l) $
@@ -261,6 +247,7 @@ replicateSyncCp slaveState@SlaveState{..} rev encoded = do
                 Right val -> return val
 
 -- | Replicate Sync-Updates directly.
+replicateSyncUpdate :: SlaveState st -> Revision -> Tagged CSL.ByteString -> IO ()
 replicateSyncUpdate slaveState rev event = replicateUpdate slaveState rev Nothing event True
 
 -- | Replicate an Update as requested by Master.
@@ -286,24 +273,22 @@ replicateUpdate SlaveState{..} rev reqId event syncing = do
                 return rev
             else do
                 sendToMaster slaveZmqSocket RepError
-                error $ "Replication failed at revision " ++ show rev ++ " -> " ++ show nr
+                void $ error $ "Replication failed at revision " ++ show rev ++ " -> " ++ show nr
                 return nr
-            where decodeEvent ev = case runGet safeGet ev of
-                                Left str -> error str
-                                Right val -> val
 
 repCheckpoint :: SlaveState st -> Revision -> IO ()
 repCheckpoint SlaveState{..} rev = do
-    debug "Got Checkpoint request."
-    withMVar slaveRevision $ \nr ->
+    debug $ "Got Checkpoint request at revision: " ++ show rev
+    -- todo: check that we're at the correct revision
+    withMVar slaveRevision $ \_ ->
         -- create checkpoint
         createCheckpoint slaveLocalState
 
 repArchive :: SlaveState st -> Revision -> IO ()
 repArchive SlaveState{..} rev = do
-    debug "Got Archive request."
+    debug $ "Got Archive request at revision: " ++ show rev
     -- todo: at right revision?
-    withMVar slaveRevision $ \nr ->
+    withMVar slaveRevision $ \_ ->
         createArchive slaveLocalState
 
 
@@ -313,7 +298,7 @@ repArchive SlaveState{..} rev = do
 --      - Master issues Update with same RequestID
 --      - repHandler replicates and puts result in MVar
 scheduleSlaveUpdate :: UpdateEvent e => SlaveState (EventState e) -> e -> IO (MVar (EventResult e))
-scheduleSlaveUpdate slaveState@SlaveState{..} event = do
+scheduleSlaveUpdate SlaveState{..} event = do
         debug "Update by Slave."
         result <- newEmptyMVar
         -- slaveLastRequestID is only modified here - and used for locking the state

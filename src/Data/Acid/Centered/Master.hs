@@ -30,30 +30,22 @@ import Data.SafeCopy
 import Data.Acid
 import Data.Acid.Core
 import Data.Acid.Abstract
-import Data.Acid.Advanced
 import Data.Acid.Local
 import Data.Acid.Log
-import Data.Serialize (Serialize(..), put, get,
-                       decode, encode,
-                       runPutLazy, runPut
-                      )
+import Data.Serialize (decode, encode, runPutLazy)
 
 import Data.Acid.Centered.Common
 
 import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread)
 import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan)
-import Control.Monad (when, unless, void,
-                      forever, forM_,
-                      liftM, liftM2)
+import Control.Monad (when, unless, void, forever, forM_, liftM2)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
 
-import System.ZMQ4 (Context, Socket, Router(..), Receiver, Flag(..),
+import System.ZMQ4 (Context, Socket, Router(..), Receiver,
                     setReceiveHighWM, setSendHighWM, restrict,
-                    context, term, socket, close,
-                    bind, unbind,
+                    context, term, socket, close, bind, unbind,
                     poll, Poll(..), Event(..),
-                    waitRead,
                     sendMulti, receiveMulti)
 import System.FilePath ( (</>) )
 
@@ -67,9 +59,8 @@ import Safe (headDef)
 
 -- auto imports following - need to be cleaned up
 import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
-                               takeMVar, putMVar,
-                               readMVar, isEmptyMVar,
-                               modifyMVar, modifyMVar_, withMVar)
+                               takeMVar, putMVar, isEmptyMVar,
+                               modifyMVar_, withMVar)
 
 --------------------------------------------------------------------------------
 
@@ -115,7 +106,7 @@ masterRequestHandler masterState@MasterState{..} = do
                 -- New Slave joined.
                 NewSlave r -> connectNode masterState ident r
                 -- Slave is done replicating.
-                RepDone r -> return () -- updateNodeStatus masterState ident r
+                RepDone _ -> return () -- updateNodeStatus masterState ident r, TODO
                 -- Slave sends an Udate.
                 ReqUpdate rid event ->
                     queueRepItem masterState (RIUpdate event (Right (rid, ident)))
@@ -195,11 +186,11 @@ sendSyncCheckpoint sock (Checkpoint cr encoded) =
 
 -- | Send one (encoded) Update to a Slave.
 sendSyncUpdate :: MVar (Socket Router) -> Revision -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
-sendSyncUpdate sock revision update = sendToSlave sock (DoSyncRep revision update)
+sendSyncUpdate sock revision encoded = sendToSlave sock (DoSyncRep revision encoded)
 
 -- | Send one (encoded) Update to a Slave.
 sendUpdate :: MVar (Socket Router) -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
-sendUpdate sock revision reqId update = sendToSlave sock (DoRep revision reqId update)
+sendUpdate sock revision reqId encoded = sendToSlave sock (DoRep revision reqId encoded)
 
 sendCheckpoint :: MVar (Socket Router) -> Revision -> NodeIdentity -> IO ()
 sendCheckpoint sock revision = sendToSlave sock (DoCheckpoint revision)
@@ -216,7 +207,7 @@ receiveFrame sock = do
     let ident = head list
     let msg = list !! 1
     case decode msg of
-        Left str -> error $ "Data.Serialize.decode failed on SlaveMessage: " ++ show msg
+        Left str -> error $ "Data.Serialize.decode failed on SlaveMessage: " ++ show str
         Right smsg -> do
             debug $ "Received from [" ++ CS.unpack ident ++ "]: "
                         ++ take 20 (show smsg)
@@ -251,8 +242,8 @@ openMasterStateFrom directory address port initialState = do
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
         sock <- socket ctx Router
-        setReceiveHighWM (restrict (100*1000)) sock
-        setSendHighWM (restrict (100*1000)) sock
+        setReceiveHighWM (restrict (100*1000 :: Int)) sock
+        setSendHighWM (restrict (100*1000 :: Int)) sock
         bind sock addr
         msock <- newMVar sock
         repTid <- newEmptyMVar
@@ -269,8 +260,8 @@ openMasterStateFrom directory address port initialState = do
                                       , zmqAddr = addr
                                       , zmqSocket = msock
                                       }
-        forkIO $ masterRequestHandler masterState
-        forkIO $ masterReplicationHandler masterState
+        void $ forkIO $ masterRequestHandler masterState
+        void $ forkIO $ masterReplicationHandler masterState
         return $ toAcidState masterState
 
 -- | Close the master state.

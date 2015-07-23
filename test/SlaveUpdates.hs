@@ -3,8 +3,8 @@
 import Data.Acid
 import Data.Acid.Centered
 
-import Control.Monad (when)
-import Control.Concurrent (threadDelay)
+import Control.Monad (void, when)
+import Control.Concurrent (forkIO, threadDelay)
 import System.Exit (exitSuccess, exitFailure)
 import System.Directory (doesDirectoryExist, removeDirectoryRecursive)
 
@@ -42,7 +42,7 @@ main = do
     cleanup "state/SlaveUpdates"
 
     acid <- openMasterStateFrom "state/SlaveUpdates/m" "127.0.0.1" 3333 (IntState 0)
-    slave1
+    void $ forkIO slave1
     slave2
     val <- query acid GetState
     closeAcidState acid

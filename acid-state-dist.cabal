@@ -80,8 +80,11 @@ library
   -- Base language which the package is written in.
   default-language:    Haskell2010
 
+  extensions:       CPP
+  ghc-options:      -Wall -threaded
   -- Switch on debugging by "-Unodebug", off by "-Dnodebug"
-  ghc-options:      -Wall -threaded -cpp -Unodebug
+  cpp-options:      -Unodebug
+
 
 ----------------------------------------------------------------------
 -- Tests

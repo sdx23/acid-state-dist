@@ -15,4 +15,8 @@ Do Master and other Slaves get the update?
 
 For diverged state the CRC check must fail (unless Checkpoints were replicated).
 
+# CheckpointSync
+
+A diverged state must be the same after sync-replicating a Checkpoint (i.e.
+Slave joins only after generating the checkpoint).
 

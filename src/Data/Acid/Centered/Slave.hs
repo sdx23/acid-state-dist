@@ -178,6 +178,7 @@ onSyncDone :: (IsAcidic st, Typeable st) => SlaveState st -> Crc -> IO ()
 onSyncDone slaveState@SlaveState{..} crc = do
     localCrc <- crcOfState slaveLocalState
     if crc /= localCrc then do
+        -- TODO: this is an error
         putStrLn "Data.Acid.Centered.Slave: CRC mismatch after sync. Exiting."
         void $ forkIO $ liberateState slaveState
     else do
@@ -339,10 +340,12 @@ liberateState SlaveState{..} = do
         waitPoll 100 (withMVar slaveRequests (return . M.null))
         -- send master quit message
         sendToMaster slaveZmqSocket SlaveQuit
-        -- wait replication chan
-        debug "Waiting for repChan to empty."
-        mtid <- myThreadId
-        putMVar slaveRepThreadId mtid
+        -- wait replication chan, only if sync done
+        syncDone <- Event.isSet slaveSyncDone
+        when syncDone $ do
+            debug "Waiting for repChan to empty."
+            mtid <- myThreadId
+            putMVar slaveRepThreadId mtid
         -- kill handler threads
         debug "Killing request handler."
         withMVar slaveReqThreadId killThread

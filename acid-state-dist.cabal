@@ -82,13 +82,29 @@ library
   -- Base language which the package is written in.
   default-language:    Haskell2010
 
-test-suite simple
-  main-is:          simple.hs
+----------------------------------------------------------------------
+-- Tests
+test-suite Simple
+  main-is:          Simple.hs
   type:             exitcode-stdio-1.0
   hs-source-dirs:   test
-  ghc-options:      -Wall
+  ghc-options:      -Wall -threaded
   default-language: Haskell2010
   build-depends:    base,
+                    directory,
+                    mtl,
+                    safecopy,
+                    acid-state,
+                    acid-state-dist
+
+test-suite SlaveUpdates
+  main-is:          SlaveUpdates.hs
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  ghc-options:      -Wall -threaded
+  default-language: Haskell2010
+  build-depends:    base,
+                    directory,
                     mtl,
                     safecopy,
                     acid-state,

@@ -20,3 +20,8 @@ For diverged state the CRC check must fail (unless Checkpoints were replicated).
 A diverged state must be the same after sync-replicating a Checkpoint (i.e.
 Slave joins only after generating the checkpoint).
 
+# OrderingRandom
+
+It is essential to keep ordering of events identical on all nodes. This test
+applies a non-commutative operation on the state to check this behaviour.
+

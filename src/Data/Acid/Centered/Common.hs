@@ -70,14 +70,16 @@ type Crc = Word16
 
 
 #ifdef nodebug
+-- | Debugging disabled.
 debug :: String -> IO ()
 debug _ = return ()
 #else
--- | Debugging without interleaving output from different threads
+-- | Lock for non-interleaved debug output.
 {-# NOINLINE debugLock #-}
 debugLock :: L.Lock
 debugLock = unsafePerformIO L.new
 
+-- | Debugging without interleaving output from different threads.
 debug :: String -> IO ()
 debug = L.with debugLock . hPutStrLn stderr
 #endif

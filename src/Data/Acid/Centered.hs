@@ -6,7 +6,14 @@
   Maintainer  :  max.voit+hdv@with-eyes.net
   Portability :  ?
 
-  Centered acid state replication backend
+  A replication backend for acid-state that is centered around a Master-node.
+  Slave-nodes connect the Master, are synchronized and get updated by the
+  Master continuously.
+
+  Running Updates on the Master works as known from acid-state, and with
+  negligible delay.
+  On Slaves Updates are delayed by approximately one round trip time.
+  Furthermore Slaves' Updates block (and timeout) if the Master is unreachable.
 
 -}
 

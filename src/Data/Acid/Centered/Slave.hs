@@ -61,6 +61,7 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 
 --------------------------------------------------------------------------------
 
+-- | Slave state structure, for internal use.
 data SlaveState st
     = SlaveState { slaveLocalState :: AcidState st
                  , slaveRepChan :: Chan SlaveRepItem
@@ -85,6 +86,8 @@ data SlaveRepItem =
     | SRIArchive Revision
     | SRIUpdate Revision (Maybe RequestID) (Tagged CSL.ByteString)
 
+-- | Open a local State as Slave for a Master. The directory for the local state
+-- files is the default one ("state/NameOfState").
 enslaveState :: (IsAcidic st, Typeable st) =>
             String          -- ^ hostname of the Master
          -> PortNumber      -- ^ port to connect to
@@ -93,7 +96,8 @@ enslaveState :: (IsAcidic st, Typeable st) =>
 enslaveState address port initialState =
     enslaveStateFrom ("state" </> show (typeOf initialState)) address port initialState
 
--- | Open a local State as Slave for a Master.
+-- | Open a local State as Slave for a Master. The directory of the local state
+-- files can be specified.
 enslaveStateFrom :: (IsAcidic st, Typeable st) =>
             FilePath        -- ^ location of the local state files.
          -> String          -- ^ hostname of the Master

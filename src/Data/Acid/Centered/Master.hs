@@ -64,6 +64,7 @@ import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
 
 --------------------------------------------------------------------------------
 
+-- | Master state structure, for internal use.
 data MasterState st
     = MasterState { localState :: AcidState st
                   , nodeStatus :: MVar NodeStatus
@@ -213,7 +214,8 @@ receiveFrame sock = do
                         ++ take 20 (show smsg)
             return (ident, smsg)
 
--- | Open the master state.
+-- | Open the master state. The directory for the local state files is the
+-- default one ("state/NameOfState").
 openMasterState :: (IsAcidic st, Typeable st) =>
                String       -- ^ address to bind (useful to listen on specific interfaces only)
             -> PortNumber   -- ^ port to bind to

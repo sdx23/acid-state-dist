@@ -45,6 +45,11 @@ build-type:          Simple
 -- Constraint on the version of Cabal needed to build this package.
 cabal-version:       >=1.10
 
+-- Flag for controlling debug output
+flag debug
+  description:       enable debug output
+  default:           True
+
 
 library
   -- Modules exported by the library.
@@ -80,10 +85,13 @@ library
   -- Base language which the package is written in.
   default-language:    Haskell2010
 
-  extensions:       CPP
+  default-extensions:       CPP
   ghc-options:      -Wall -threaded
   -- Switch on debugging by "-Unodebug", off by "-Dnodebug"
-  cpp-options:      -Unodebug
+  if flag(debug)
+    cpp-options:      -Unodebug
+  else
+    cpp-options:      -Dnodebug
 
 
 ----------------------------------------------------------------------
@@ -122,4 +130,33 @@ test-suite OrderingRandom
   ghc-options:      -Wall -threaded
   default-language: Haskell2010
   build-depends:    base, directory, mtl, random,
+                    safecopy, acid-state, acid-state-dist
+
+----------------------------------------------------------------------
+-- Benchmarks
+benchmark Local
+  main-is:          Local.hs
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   benchmark
+  ghc-options:      -Wall -threaded
+  default-language: Haskell2010
+  build-depends:    base, directory, mtl, criterion,
+                    safecopy, acid-state
+
+benchmark MasterOnly
+  main-is:          MasterOnly.hs
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   benchmark
+  ghc-options:      -Wall -threaded
+  default-language: Haskell2010
+  build-depends:    base, directory, mtl, criterion,
+                    safecopy, acid-state, acid-state-dist
+
+benchmark MasterSlave
+  main-is:          MasterSlave.hs
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   benchmark
+  ghc-options:      -Wall -threaded
+  default-language: Haskell2010
+  build-depends:    base, directory, mtl, criterion,
                     safecopy, acid-state, acid-state-dist

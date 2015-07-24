@@ -53,11 +53,11 @@ main = do
     -- start slaves
     s1Res <- newEmptyMVar
     s1Done <- newEmptyMVar
-    s1Tid <- forkIO $ slave 1 s1Res s1Done allDone
+    _ <- forkIO $ slave 1 s1Res s1Done allDone
     threadDelay 1000 -- zmq-indentity could be the same if too fast
     s2Res <- newEmptyMVar
     s2Done <- newEmptyMVar
-    s2Tid <- forkIO $ slave 2 s2Res s2Done allDone
+    _ <- forkIO $ slave 2 s2Res s2Done allDone
     -- manipulate state on master
     let rs = randomRs randRange $ mkStdGen 23 :: [Int]
     forM_ (take numRands rs) $ \r -> do

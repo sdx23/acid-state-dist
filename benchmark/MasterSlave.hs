@@ -1,33 +1,19 @@
 {-# LANGUAGE TypeFamilies #-}
 
-import Criterion
 import Criterion.Main
 
 import Data.Acid
 import Data.Acid.Centered
 
-import Control.Monad (void, when, replicateM_)
-import Control.Concurrent (threadDelay, forkIO)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import System.Exit (exitSuccess)
-import System.Directory (doesDirectoryExist, removeDirectoryRecursive)
+import Control.Monad (void)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 
--- state structures
-import IntCommon
+-- common benchmarking stuff
+import BenchCommon
 
--- helpers
-delaySec :: Int -> IO ()
-delaySec n = threadDelay $ n*1000*1000
-
-cleanup :: FilePath -> IO ()
-cleanup path = do
-    sp <- doesDirectoryExist path
-    when sp $ removeDirectoryRecursive path
-
--- benchmark
-masterBench :: AcidState IntState -> IO ()
-masterBench acid = replicateM_ 100 $ update acid IncrementState
-
+-- the slave
 slave :: MVar () -> IO ()
 slave sync = do
     acid <- enslaveStateFrom "state/MasterSlave/s1" "localhost" 3333 (IntState 0)
@@ -41,11 +27,12 @@ main = do
     acid <- openMasterStateFrom "state/MasterSlave/m" "127.0.0.1" 3333 (IntState 0)
     sync <- newEmptyMVar
     void $ forkIO $ slave sync
-    delaySec 2
+    delaySec 3
 
     -- run benchmark
     defaultMain
         [ bench "MasterSlave" $ nfIO (masterBench acid)
+        , bench "MasterSlave-grouped" $ nfIO (masterBenchGrouped acid)
         ]
 
     -- cleanup

@@ -114,6 +114,15 @@ test-suite SlaveUpdates
   build-depends:    base, directory, mtl,
                     safecopy, acid-state, acid-state-dist
 
+test-suite CRCFail
+  main-is:          CRCFail.hs
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  ghc-options:      -Wall -threaded
+  default-language: Haskell2010
+  build-depends:    base, directory, mtl,
+                    safecopy, acid-state, acid-state-dist
+
 test-suite CheckpointSync
   main-is:          CheckpointSync.hs
   type:             exitcode-stdio-1.0

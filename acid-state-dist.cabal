@@ -169,3 +169,12 @@ benchmark MasterSlave
   default-language: Haskell2010
   build-depends:    base, directory, mtl, criterion,
                     safecopy, acid-state, acid-state-dist
+
+benchmark Slave
+  main-is:          Slave.hs
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   benchmark
+  ghc-options:      -Wall -threaded
+  default-language: Haskell2010
+  build-depends:    base, directory, mtl, criterion,
+                    safecopy, acid-state, acid-state-dist

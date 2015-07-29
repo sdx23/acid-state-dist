@@ -52,3 +52,9 @@ masterBench acid = replicateM_ 100 $ update acid IncrementState
 masterBenchGrouped :: AcidState IntState -> IO ()
 masterBenchGrouped acid = groupUpdates acid (replicate 100 IncrementState)
 
+slaveBench :: AcidState IntState -> IO ()
+slaveBench acid = replicateM_ 10 $ update acid IncrementState
+
+slaveBenchGrouped :: AcidState IntState -> IO ()
+slaveBenchGrouped acid = groupUpdates acid (replicate 10 IncrementState)
+

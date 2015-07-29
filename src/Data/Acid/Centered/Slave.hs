@@ -42,16 +42,17 @@ import System.ZMQ4 (Context, Socket, Dealer(..),
                     connect, disconnect, send, receive)
 import System.FilePath ( (</>) )
 
-import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, threadDelay)
+import Control.Concurrent (forkIO, throwTo, ThreadId, myThreadId, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
                                 withMVar, modifyMVar, modifyMVar_,
                                 takeMVar, putMVar)
 import Data.IORef (writeIORef)
-import Control.Monad (forever, void, when, unless)
+import Control.Monad (void, when, unless)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar, writeTVar)
 import qualified Control.Concurrent.Event as Event
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
+import Control.Exception (handle, throw, SomeException, ErrorCall(..), AsyncException(..))
 
 import Data.Map (Map)
 import qualified Data.Map as M
@@ -71,6 +72,7 @@ data SlaveState st
                  , slaveLastRequestID :: MVar RequestID
                  , slaveRepThreadId :: MVar ThreadId
                  , slaveReqThreadId :: MVar ThreadId
+                 , slaveParentThreadId :: ThreadId
                  , slaveZmqContext :: Context
                  , slaveZmqAddr :: String
                  , slaveZmqSocket :: MVar (Socket Dealer)
@@ -117,6 +119,7 @@ enslaveStateFrom directory address port initialState = do
         syncDone <- Event.new
         reqTid <- newEmptyMVar
         repTid <- newEmptyMVar
+        parTid <- myThreadId
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
@@ -134,6 +137,7 @@ enslaveStateFrom directory address port initialState = do
                                     , slaveLastRequestID = lastReqId
                                     , slaveReqThreadId = reqTid
                                     , slaveRepThreadId = repTid
+                                    , slaveParentThreadId = parTid
                                     , slaveZmqContext = ctx
                                     , slaveZmqAddr = addr
                                     , slaveZmqSocket = msock
@@ -147,35 +151,42 @@ slaveRequestHandler :: (IsAcidic st, Typeable st) => SlaveState st -> IO ()
 slaveRequestHandler slaveState@SlaveState{..} = do
     mtid <- myThreadId
     putMVar slaveReqThreadId mtid
-    forever $ do
-        --waitRead =<< readMVar slaveZmqSocket
-        -- FIXME: we needn't poll if not for strange zmq behaviour
-        re <- withMVar slaveZmqSocket $ \sock -> poll 100 [Sock sock [In] Nothing]
-        unless (null $ head re) $ do
-            msg <- withMVar slaveZmqSocket receive
-            case decode msg of
-                Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show str
-                Right mmsg -> do
-                     debug $ "Received: " ++ show mmsg
-                     case mmsg of
-                        -- We are sent an Update to replicate.
-                        DoRep r i d -> queueRepItem slaveState (SRIUpdate r i d)
-                        -- We are sent a Checkpoint for synchronization.
-                        DoSyncCheckpoint r d -> replicateSyncCp slaveState r d
-                        -- We are sent an Update to replicate for synchronization.
-                        DoSyncRep r d -> replicateSyncUpdate slaveState r d
-                        -- Master done sending all synchronization Updates.
-                        SyncDone c -> onSyncDone slaveState c
-                        -- We are sent a Checkpoint request.
-                        DoCheckpoint r -> queueRepItem slaveState (SRICheckpoint r)
-                        -- We are sent an Archive request.
-                        DoArchive r -> queueRepItem slaveState (SRIArchive r)
-                        -- We are allowed to Quit.
-                        MayQuit -> writeChan slaveRepChan SRIEnd
-                        -- We are requested to Quit.
-                        MasterQuit -> void $ forkIO $ liberateState slaveState
-                        -- no other messages possible
-                        _ -> error $ "Unknown message received: " ++ show mmsg
+    let loop = handle (\e -> throwTo slaveParentThreadId (e :: SomeException)) $
+          handle killHandler $ do
+            --waitRead =<< readMVar slaveZmqSocket
+            -- FIXME: we needn't poll if not for strange zmq behaviour
+            re <- withMVar slaveZmqSocket $ \sock -> poll 100 [Sock sock [In] Nothing]
+            unless (null $ head re) $ do
+                msg <- withMVar slaveZmqSocket receive
+                case decode msg of
+                    Left str -> error $ "Data.Serialize.decode failed on MasterMessage: " ++ show str
+                    Right mmsg -> do
+                         debug $ "Received: " ++ show mmsg
+                         case mmsg of
+                            -- We are sent an Update to replicate.
+                            DoRep r i d -> queueRepItem slaveState (SRIUpdate r i d)
+                            -- We are sent a Checkpoint for synchronization.
+                            DoSyncCheckpoint r d -> replicateSyncCp slaveState r d
+                            -- We are sent an Update to replicate for synchronization.
+                            DoSyncRep r d -> replicateSyncUpdate slaveState r d
+                            -- Master done sending all synchronization Updates.
+                            SyncDone c -> onSyncDone slaveState c
+                            -- We are sent a Checkpoint request.
+                            DoCheckpoint r -> queueRepItem slaveState (SRICheckpoint r)
+                            -- We are sent an Archive request.
+                            DoArchive r -> queueRepItem slaveState (SRIArchive r)
+                            -- We are allowed to Quit.
+                            MayQuit -> writeChan slaveRepChan SRIEnd
+                            -- We are requested to Quit.
+                            MasterQuit -> void $ forkIO $ liberateState slaveState
+                            -- no other messages possible, enforced by type checker
+            loop
+    loop
+    where
+        -- FIXME: actually we'd like our own exception for graceful exit
+        killHandler :: AsyncException -> IO ()
+        killHandler ThreadKilled = return ()
+        killHandler e = throw e
 
 -- | After sync check CRC
 onSyncDone :: (IsAcidic st, Typeable st) => SlaveState st -> Crc -> IO ()
@@ -203,8 +214,8 @@ slaveReplicationHandler slaveState@SlaveState{..} = do
         putMVar slaveRepThreadId mtid
         -- todo: timeout is magic variable, make customizable?
         noTimeout <- Event.waitTimeout slaveSyncDone $ 10*1000*1000
-        unless noTimeout $ error "Slave took too long to sync, ran into timeout."
-        let loop = do
+        unless noTimeout $ throwTo slaveParentThreadId $ ErrorCall "Slave took too long to sync, ran into timeout."
+        let loop = handle (\e -> throwTo slaveParentThreadId (e :: SomeException)) $ do
                 mayRepItem <- readChan slaveRepChan
                 case mayRepItem of
                     SRIEnd -> return ()
@@ -326,7 +337,7 @@ timeoutRequest :: SlaveState st -> RequestID -> IO ()
 timeoutRequest SlaveState{..} reqId = do
     threadDelay $ 5*1000*1000
     stillThere <- withMVar slaveRequests (return . M.member reqId)
-    when stillThere $ error "Update-Request timed out."
+    when stillThere $ throwTo slaveParentThreadId $ ErrorCall "Update-Request timed out."
 
 -- | Send a message to Master.
 sendToMaster :: MVar (Socket Dealer) -> SlaveMessage -> IO ()
@@ -353,6 +364,7 @@ liberateState SlaveState{..} = do
         -- kill handler threads
         debug "Killing request handler."
         withMVar slaveReqThreadId killThread
+        --withMVar slaveReqThreadId $ \t -> throwTo t GracefulExit
         -- cleanup zmq
         debug "Closing down zmq."
         withMVar slaveZmqSocket $ \s -> do
@@ -362,7 +374,6 @@ liberateState SlaveState{..} = do
         -- cleanup local state
         debug "Closing local state."
         closeAcidState slaveLocalState
-
 
 slaveToAcidState :: IsAcidic st => SlaveState st -> AcidState st
 slaveToAcidState slaveState

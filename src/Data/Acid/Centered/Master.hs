@@ -36,11 +36,15 @@ import Data.Serialize (decode, encode, runPutLazy)
 
 import Data.Acid.Centered.Common
 
-import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread)
+import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, throwTo)
 import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan)
-import Control.Monad (when, unless, void, forever, forM_, liftM2)
+import Control.Monad (when, unless, void, forM_, liftM2)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
+import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
+                               takeMVar, putMVar, isEmptyMVar,
+                               modifyMVar_, withMVar)
+import Control.Exception (handle, throw, SomeException, AsyncException(..))
 
 import System.ZMQ4 (Context, Socket, Router(..), Receiver,
                     setReceiveHighWM, setSendHighWM, restrict,
@@ -57,11 +61,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.List.NonEmpty as NEL
 import Safe (headDef)
 
--- auto imports following - need to be cleaned up
-import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
-                               takeMVar, putMVar, isEmptyMVar,
-                               modifyMVar_, withMVar)
-
 --------------------------------------------------------------------------------
 
 -- | Master state structure, for internal use.
@@ -73,6 +72,7 @@ data MasterState st
                   , masterReplicationChan :: Chan ReplicationItem
                   , masterReqThreadId :: MVar ThreadId
                   , masterRepThreadId :: MVar ThreadId
+                  , masterParentThreadId :: ThreadId
                   , zmqContext :: Context
                   , zmqAddr :: String
                   , zmqSocket :: MVar (Socket Router)
@@ -95,30 +95,36 @@ masterRequestHandler :: (IsAcidic st, Typeable st) => MasterState st -> IO ()
 masterRequestHandler masterState@MasterState{..} = do
     mtid <- myThreadId
     putMVar masterReqThreadId mtid
-    forever $ do
-        -- take one frame
-        -- waitRead =<< readMVar zmqSocket
-        -- FIXME: we needn't poll if not for strange zmq behaviour
-        re <- withMVar zmqSocket $ \sock -> poll 100 [Sock sock [In] Nothing]
-        unless (null $ head re) $ do
-            (ident, msg) <- withMVar zmqSocket receiveFrame
-            -- handle according frame contents
-            case msg of
-                -- New Slave joined.
-                NewSlave r -> connectNode masterState ident r
-                -- Slave is done replicating.
-                RepDone _ -> return () -- updateNodeStatus masterState ident r, TODO
-                -- Slave sends an Udate.
-                ReqUpdate rid event ->
-                    queueRepItem masterState (RIUpdate event (Right (rid, ident)))
-                -- Slave quits.
-                SlaveQuit -> do
-                    sendToSlave zmqSocket MayQuit ident
-                    removeFromNodeStatus nodeStatus ident
-                -- no other messages possible
-                _ -> error $ "Unknown message received: " ++ show msg
-            -- loop around
-            debug "Loop iteration."
+    let loop = handle (\e -> throwTo masterParentThreadId (e :: SomeException)) $
+          handle killHandler $ do
+            -- take one frame
+            -- waitRead =<< readMVar zmqSocket
+            -- FIXME: we needn't poll if not for strange zmq behaviour
+            re <- withMVar zmqSocket $ \sock -> poll 100 [Sock sock [In] Nothing]
+            unless (null $ head re) $ do
+                (ident, msg) <- withMVar zmqSocket receiveFrame
+                -- handle according frame contents
+                case msg of
+                    -- New Slave joined.
+                    NewSlave r -> connectNode masterState ident r
+                    -- Slave is done replicating.
+                    RepDone _ -> return () -- updateNodeStatus masterState ident r, TODO
+                    -- Slave sends an Udate.
+                    ReqUpdate rid event ->
+                        queueRepItem masterState (RIUpdate event (Right (rid, ident)))
+                    -- Slave quits.
+                    SlaveQuit -> do
+                        sendToSlave zmqSocket MayQuit ident
+                        removeFromNodeStatus nodeStatus ident
+                    -- no other messages possible
+                    _ -> error $ "Unknown message received: " ++ show msg
+            loop
+    loop
+    where
+        -- FIXME: actually we'd like our own exception for graceful exit
+        killHandler :: AsyncException -> IO ()
+        killHandler ThreadKilled = return ()
+        killHandler e = throw e
 
 -- | Remove a Slave node from NodeStatus.
 removeFromNodeStatus :: MVar NodeStatus -> NodeIdentity -> IO ()
@@ -250,6 +256,7 @@ openMasterStateFrom directory address port initialState = do
         msock <- newMVar sock
         repTid <- newEmptyMVar
         reqTid <- newEmptyMVar
+        parTid <- myThreadId
         lock <- newEmptyMVar
         let masterState = MasterState { localState = lst
                                       , nodeStatus = ns
@@ -258,6 +265,7 @@ openMasterStateFrom directory address port initialState = do
                                       , masterReplicationChan = repChan
                                       , masterRepThreadId = repTid
                                       , masterReqThreadId = reqTid
+                                      , masterParentThreadId = parTid
                                       , zmqContext = ctx
                                       , zmqAddr = addr
                                       , zmqSocket = msock
@@ -320,7 +328,7 @@ masterReplicationHandler :: MasterState st -> IO ()
 masterReplicationHandler MasterState{..} = do
     mtid <- myThreadId
     putMVar masterRepThreadId mtid
-    let loop = do
+    let loop = handle (\e -> throwTo masterParentThreadId (e :: SomeException)) $ do
             debug "Replicating next item."
             repItem <- readChan masterReplicationChan
             case repItem of

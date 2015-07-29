@@ -37,7 +37,7 @@ import Data.Serialize (decode, encode, runPutLazy)
 import Data.Acid.Centered.Common
 
 import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, throwTo)
-import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan)
+import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan, dupChan)
 import Control.Monad (when, unless, void, forM_, liftM2)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
@@ -70,8 +70,10 @@ data MasterState st
                   , masterStateLock :: MVar ()
                   , masterRevision :: MVar NodeRevision
                   , masterReplicationChan :: Chan ReplicationItem
+                  , masterReplicationChanN :: Chan ReplicationItem
                   , masterReqThreadId :: MVar ThreadId
-                  , masterRepThreadId :: MVar ThreadId
+                  , masterRepLThreadId :: MVar ThreadId
+                  , masterRepNThreadId :: MVar ThreadId
                   , masterParentThreadId :: ThreadId
                   , zmqContext :: Context
                   , zmqAddr :: String
@@ -245,6 +247,7 @@ openMasterStateFrom directory address port initialState = do
         lrev <- atomically $ readTVar $ logNextEntryId levs
         rev <- newMVar lrev
         repChan <- newChan
+        repChanN <- dupChan repChan
         ns <- newMVar M.empty
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
@@ -254,7 +257,8 @@ openMasterStateFrom directory address port initialState = do
         setSendHighWM (restrict (100*1000 :: Int)) sock
         bind sock addr
         msock <- newMVar sock
-        repTid <- newEmptyMVar
+        repTidL <- newEmptyMVar
+        repTidN <- newEmptyMVar
         reqTid <- newEmptyMVar
         parTid <- myThreadId
         lock <- newEmptyMVar
@@ -263,7 +267,9 @@ openMasterStateFrom directory address port initialState = do
                                       , masterStateLock = lock
                                       , masterRevision = rev
                                       , masterReplicationChan = repChan
-                                      , masterRepThreadId = repTid
+                                      , masterReplicationChanN = repChanN
+                                      , masterRepLThreadId = repTidL
+                                      , masterRepNThreadId = repTidN
                                       , masterReqThreadId = reqTid
                                       , masterParentThreadId = parTid
                                       , zmqContext = ctx
@@ -271,7 +277,8 @@ openMasterStateFrom directory address port initialState = do
                                       , zmqSocket = msock
                                       }
         void $ forkIO $ masterRequestHandler masterState
-        void $ forkIO $ masterReplicationHandler masterState
+        void $ forkIO $ masterReplicationHandlerL masterState
+        void $ forkIO $ masterReplicationHandlerN masterState
         return $ toAcidState masterState
 
 -- | Close the master state.
@@ -287,10 +294,11 @@ closeMasterState MasterState{..} = do
         waitPoll 100 (withMVar nodeStatus (return . M.null))
         -- todo: this could use a timeout, there may be zombies
         -- wait replication chan
-        debug "Waiting for repChan to empty."
+        debug "Waiting for repChans to empty."
         writeChan masterReplicationChan RIEnd
         mtid <- myThreadId
-        putMVar masterRepThreadId mtid
+        putMVar masterRepLThreadId mtid
+        putMVar masterRepNThreadId mtid
         -- kill handler
         debug "Killing request handler."
         withMVar masterReqThreadId killThread
@@ -322,42 +330,61 @@ scheduleMasterUpdate masterState@MasterState{..} event = do
 queueRepItem :: MasterState st -> ReplicationItem -> IO ()
 queueRepItem MasterState{..} = writeChan masterReplicationChan
 
--- | The replication handler. Takes care to run Updates locally in the same
---   order as sending them out to the network.
-masterReplicationHandler :: MasterState st -> IO ()
-masterReplicationHandler MasterState{..} = do
+-- | The local replication handler. Takes care to run Updates locally.
+masterReplicationHandlerL :: MasterState st -> IO ()
+masterReplicationHandlerL MasterState{..} = do
     mtid <- myThreadId
-    putMVar masterRepThreadId mtid
+    putMVar masterRepLThreadId mtid
     let loop = handle (\e -> throwTo masterParentThreadId (e :: SomeException)) $ do
-            debug "Replicating next item."
+            debug "Replicating next item locally."
             repItem <- readChan masterReplicationChan
             case repItem of
                 RIEnd -> return ()
                 RIArchive -> do
-                    debug "Archive globally."
+                    debug "Archive on master."
                     createArchive localState
+                    loop
+                RICheckpoint -> do
+                    debug "Checkpoint on master."
+                    createCheckpoint localState
+                    loop
+                RIUpdate event sink -> do
+                    -- todo: this is not the acutual update number, since
+                    -- splitting up the chan
+                    -- also: be careful, this kills performance
+                    --withMVar masterRevision $ \mr ->
+                    --    debug $ "Replicating Update myself to " ++ show (mr + 1)
+                    case sink of
+                        Left callback   -> callback
+                        _               -> void $ scheduleColdUpdate localState event
+                    loop
+    loop
+    -- signal that we're done
+    void $ takeMVar masterRepLThreadId
+
+-- | The network replication handler. Takes care to run Updates on Slaves.
+masterReplicationHandlerN :: MasterState st -> IO ()
+masterReplicationHandlerN MasterState{..} = do
+    mtid <- myThreadId
+    putMVar masterRepNThreadId mtid
+    let loop = handle (\e -> throwTo masterParentThreadId (e :: SomeException)) $ do
+            debug "Replicating next item in network."
+            repItem <- readChan masterReplicationChanN
+            case repItem of
+                RIEnd -> return ()
+                RIArchive -> do
                     withMVar nodeStatus $ \ns -> do
                         debug "Sending archive request to Slaves."
                         withMVar masterRevision $ \mr ->
                             forM_ (M.keys ns) $ sendArchive zmqSocket mr
                     loop
                 RICheckpoint -> do
-                    debug "Checkpoint on master."
-                    createCheckpoint localState
                     withMVar nodeStatus $ \ns -> do
                         debug "Sending Checkpoint Request to Slaves."
                         withMVar masterRevision $ \mr ->
                             forM_ (M.keys ns) $ sendCheckpoint zmqSocket mr
                     loop
                 RIUpdate event sink -> do
-                    -- todo: temporary only one Chan, no improvement to without chan!
-                    -- local part
-                    withMVar masterRevision $ \mr ->
-                        debug $ "Replicating Update myself to " ++ show (mr + 1)
-                    case sink of
-                        Left callback   -> callback
-                        _               -> void $ scheduleColdUpdate localState event
-                    -- remote part
                     withMVar nodeStatus $ \ns -> do
                         debug $ "Sending Update to Slaves, there are " ++ show (M.size ns)
                         modifyMVar_ masterRevision $ \mrOld -> do
@@ -372,7 +399,7 @@ masterReplicationHandler MasterState{..} = do
                     loop
     loop
     -- signal that we're done
-    void $ takeMVar masterRepThreadId
+    void $ takeMVar masterRepNThreadId
 
 -- | Create a checkpoint (on all nodes, per request).
 --   This is useful for faster resume of both the Master (at startup) and

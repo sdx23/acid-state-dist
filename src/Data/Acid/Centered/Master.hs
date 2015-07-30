@@ -110,7 +110,7 @@ masterRequestHandler masterState@MasterState{..} = do
                     -- New Slave joined.
                     NewSlave r -> connectNode masterState ident r
                     -- Slave is done replicating.
-                    RepDone _ -> return () -- updateNodeStatus masterState ident r, TODO
+                    RepDone r -> updateNodeStatus masterState ident r
                     -- Slave sends an Udate.
                     ReqUpdate rid event ->
                         queueRepItem masterState (RIUpdate event (Right (rid, ident)))
@@ -118,8 +118,10 @@ masterRequestHandler masterState@MasterState{..} = do
                     SlaveQuit -> do
                         sendToSlave zmqSocket MayQuit ident
                         removeFromNodeStatus nodeStatus ident
+                    RepError -> do
+                        sendToSlave zmqSocket MayQuit ident
+                        removeFromNodeStatus nodeStatus ident
                     -- no other messages possible
-                    _ -> error $ "Unknown message received: " ++ show msg
             loop
     loop
     where
@@ -169,7 +171,12 @@ connectNode MasterState{..} i revision =
                 forM_ pastUpdates $ \(r, u) -> sendSyncUpdate zmqSocket r u i
             sendToSlave zmqSocket (SyncDone crc) i
             return $ M.insert i mr ns
-    where cpRevision (Checkpoint r _) = r
+    where
+        cpRevision (Checkpoint r _) = r
+        sendSyncCheckpoint sock (Checkpoint cr encoded) =
+            sendToSlave sock (DoSyncCheckpoint cr encoded)
+        sendSyncUpdate sock r encoded =
+            sendToSlave sock (DoSyncRep r encoded)
 
 -- | Fetch past Updates from FileLog for replication.
 getPastUpdates :: (Typeable st) => AcidState st -> Int -> IO [(Int, Tagged CSL.ByteString)]
@@ -187,25 +194,6 @@ getLastCheckpointRev state = do
 -- | Send a message to a Slave
 sendToSlave :: MVar (Socket Router) -> MasterMessage -> NodeIdentity -> IO ()
 sendToSlave msock msg ident = withMVar msock $ \sock -> sendMulti sock $ NEL.fromList [ident, encode msg]
-
--- | Send an encoded Checkpoint to a Slave.
-sendSyncCheckpoint :: MVar (Socket Router) -> Checkpoint -> NodeIdentity -> IO ()
-sendSyncCheckpoint sock (Checkpoint cr encoded) =
-    sendToSlave sock (DoSyncCheckpoint cr encoded)
-
--- | Send one (encoded) Update to a Slave.
-sendSyncUpdate :: MVar (Socket Router) -> Revision -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
-sendSyncUpdate sock revision encoded = sendToSlave sock (DoSyncRep revision encoded)
-
--- | Send one (encoded) Update to a Slave.
-sendUpdate :: MVar (Socket Router) -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> NodeIdentity -> IO ()
-sendUpdate sock revision reqId encoded = sendToSlave sock (DoRep revision reqId encoded)
-
-sendCheckpoint :: MVar (Socket Router) -> Revision -> NodeIdentity -> IO ()
-sendCheckpoint sock revision = sendToSlave sock (DoCheckpoint revision)
-
-sendArchive :: MVar (Socket Router) -> Revision -> NodeIdentity -> IO ()
-sendArchive sock revision = sendToSlave sock (DoArchive revision)
 
 -- | Receive one Frame. A Frame consists of three messages:
 --      sender ID, empty message, and actual content
@@ -400,6 +388,11 @@ masterReplicationHandlerN MasterState{..} = do
     loop
     -- signal that we're done
     void $ takeMVar masterRepNThreadId
+    where
+        sendUpdate sock revision reqId encoded =
+            sendToSlave sock (DoRep revision reqId encoded)
+        sendCheckpoint sock revision = sendToSlave sock (DoCheckpoint revision)
+        sendArchive sock revision = sendToSlave sock (DoArchive revision)
 
 -- | Create a checkpoint (on all nodes, per request).
 --   This is useful for faster resume of both the Master (at startup) and

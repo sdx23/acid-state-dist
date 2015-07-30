@@ -271,7 +271,7 @@ replicateSyncUpdate slaveState rev event = replicateUpdate slaveState rev Nothin
 --   put into the MVar in SlaveRequests.
 --   Other Updates are just replicated without using the result.
 replicateUpdate :: SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> Bool -> IO ()
-replicateUpdate SlaveState{..} rev reqId event syncing = do
+replicateUpdate slaveState@SlaveState{..} rev reqId event syncing = do
         debug $ "Got an Update to replicate " ++ show rev
         modifyMVar_ slaveRevision $ \nr -> if rev - 1 == nr
             then do
@@ -292,6 +292,7 @@ replicateUpdate SlaveState{..} rev reqId event syncing = do
             else do
                 sendToMaster slaveZmqSocket RepError
                 void $ error $ "Replication failed at revision " ++ show rev ++ " -> " ++ show nr
+                void $ forkIO $ liberateState slaveState
                 return nr
 
 repCheckpoint :: SlaveState st -> Revision -> IO ()

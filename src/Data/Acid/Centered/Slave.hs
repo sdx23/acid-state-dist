@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable, RecordWildCards #-}
+{-# LANGUAGE DeriveDataTypeable, RecordWildCards, FlexibleContexts #-}
 --------------------------------------------------------------------------------
 {- |
   Module      :  Data.Acid.CenteredSlave.hs
@@ -20,6 +20,8 @@ module Data.Acid.Centered.Slave
     (
       enslaveState
     , enslaveStateFrom
+    , enslaveRedState
+    , enslaveRedStateFrom
     , SlaveState(..)
     )  where
 
@@ -47,7 +49,7 @@ import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
                                 withMVar, modifyMVar, modifyMVar_,
                                 takeMVar, putMVar)
 import Data.IORef (writeIORef)
-import Control.Monad (void, when, unless)
+import Control.Monad (void, when, unless, liftM)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar, writeTVar)
 import qualified Control.Concurrent.Event as Event
@@ -65,6 +67,8 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 -- | Slave state structure, for internal use.
 data SlaveState st
     = SlaveState { slaveLocalState :: AcidState st
+                 , slaveStateIsRed :: Bool
+                 , slaveRepFinalizers :: MVar (Map Revision (IO ()))
                  , slaveRepChan :: Chan SlaveRepItem
                  , slaveSyncDone :: Event.Event
                  , slaveRevision :: MVar NodeRevision
@@ -79,7 +83,7 @@ data SlaveState st
                  } deriving (Typeable)
 
 -- | Memory of own Requests sent to Master.
-type SlaveRequests = Map RequestID (IO (),ThreadId)
+type SlaveRequests = Map RequestID (IO (IO ()),ThreadId)
 
 -- | One Update + Metainformation to replicate.
 data SlaveRepItem =
@@ -98,6 +102,16 @@ enslaveState :: (IsAcidic st, Typeable st) =>
 enslaveState address port initialState =
     enslaveStateFrom ("state" </> show (typeOf initialState)) address port initialState
 
+-- | Open a local State as Slave for a Master. The directory for the local state
+-- files is the default one ("state/NameOfState").
+enslaveRedState :: (IsAcidic st, Typeable st) =>
+            String          -- ^ hostname of the Master
+         -> PortNumber      -- ^ port to connect to
+         -> st              -- ^ initial state
+         -> IO (AcidState st)
+enslaveRedState address port initialState =
+    enslaveRedStateFrom ("state" </> show (typeOf initialState)) address port initialState
+
 -- | Open a local State as Slave for a Master. The directory of the local state
 -- files can be specified.
 enslaveStateFrom :: (IsAcidic st, Typeable st) =>
@@ -106,7 +120,28 @@ enslaveStateFrom :: (IsAcidic st, Typeable st) =>
          -> PortNumber      -- ^ port to connect to
          -> st              -- ^ initial state
          -> IO (AcidState st)
-enslaveStateFrom directory address port initialState = do
+enslaveStateFrom = enslaveMayRedStateFrom False
+
+-- | Open a local State as Slave for a _redundant_ Master. The directory of the local state
+-- files can be specified.
+enslaveRedStateFrom :: (IsAcidic st, Typeable st) =>
+            FilePath        -- ^ location of the local state files.
+         -> String          -- ^ hostname of the Master
+         -> PortNumber      -- ^ port to connect to
+         -> st              -- ^ initial state
+         -> IO (AcidState st)
+enslaveRedStateFrom = enslaveMayRedStateFrom True
+
+-- | Open a local State as Slave for a Master, redundant or not.
+--   The directory of the local state files can be specified.
+enslaveMayRedStateFrom :: (IsAcidic st, Typeable st) =>
+            Bool            -- ^ is redundant
+         -> FilePath        -- ^ location of the local state files.
+         -> String          -- ^ hostname of the Master
+         -> PortNumber      -- ^ port to connect to
+         -> st              -- ^ initial state
+         -> IO (AcidState st)
+enslaveMayRedStateFrom isRed directory address port initialState = do
         -- local
         lst <- openLocalStateFrom directory initialState
         let levs = localEvents $ downcast lst
@@ -120,6 +155,7 @@ enslaveStateFrom directory address port initialState = do
         reqTid <- newEmptyMVar
         repTid <- newEmptyMVar
         parTid <- myThreadId
+        repFin <- newMVar M.empty
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
@@ -130,6 +166,8 @@ enslaveStateFrom directory address port initialState = do
         msock <- newMVar sock
         sendToMaster msock $ NewSlave lrev
         let slaveState = SlaveState { slaveLocalState = lst
+                                    , slaveStateIsRed = isRed
+                                    , slaveRepFinalizers = repFin
                                     , slaveRepChan = repChan
                                     , slaveSyncDone = syncDone
                                     , slaveRevision = rev
@@ -175,6 +213,15 @@ slaveRequestHandler slaveState@SlaveState{..} = do
                             DoCheckpoint r -> queueRepItem slaveState (SRICheckpoint r)
                             -- We are sent an Archive request.
                             DoArchive r -> queueRepItem slaveState (SRIArchive r)
+                            -- Full replication of a revision
+                            FullRep r -> modifyMVar_ slaveRepFinalizers $ \rf -> do
+                                            rf M.! r
+                                            return $ M.delete r rf
+                            -- Full replication of events up to revision
+                            FullRepTo r -> modifyMVar_ slaveRepFinalizers $ \rf -> do
+                                            let (ef, nrf) = M.partitionWithKey (\k _ -> k <= r) rf
+                                            sequence_ (M.elems ef)
+                                            return nrf
                             -- We are allowed to Quit.
                             MayQuit -> writeChan slaveRepChan SRIEnd
                             -- We are requested to Quit.
@@ -208,7 +255,7 @@ queueRepItem SlaveState{..} repItem = do
         writeChan slaveRepChan repItem
 
 -- | Replicates content of Chan.
-slaveReplicationHandler :: SlaveState st -> IO ()
+slaveReplicationHandler :: Typeable st => SlaveState st -> IO ()
 slaveReplicationHandler slaveState@SlaveState{..} = do
         mtid <- myThreadId
         putMVar slaveRepThreadId mtid
@@ -263,29 +310,36 @@ replicateSyncCp SlaveState{..} rev encoded = do
                 Right val -> return val
 
 -- | Replicate Sync-Updates directly.
-replicateSyncUpdate :: SlaveState st -> Revision -> Tagged CSL.ByteString -> IO ()
+replicateSyncUpdate :: Typeable st => SlaveState st -> Revision -> Tagged CSL.ByteString -> IO ()
 replicateSyncUpdate slaveState rev event = replicateUpdate slaveState rev Nothing event True
 
 -- | Replicate an Update as requested by Master.
 --   Updates that were requested by this Slave are run locally and the result
 --   put into the MVar in SlaveRequests.
 --   Other Updates are just replicated without using the result.
-replicateUpdate :: SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> Bool -> IO ()
+replicateUpdate :: Typeable st => SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> Bool -> IO ()
 replicateUpdate slaveState@SlaveState{..} rev reqId event syncing = do
         debug $ "Got an Update to replicate " ++ show rev
         modifyMVar_ slaveRevision $ \nr -> if rev - 1 == nr
             then do
                 -- commit / run it locally
                 case reqId of
-                    Nothing ->
-                        void $ scheduleColdUpdate slaveLocalState event
-                    Just rid -> modifyMVar slaveRequests $ \srs -> do
-                        debug $ "This is the Update for Request " ++ show rid
-                        let (icallback, timeoutId) = fromMaybe (error $ "Callback not found: " ++ show rid) (M.lookup rid srs)
-                        callback <- icallback
-                        killThread timeoutId
-                        let nsrs = M.delete rid srs
-                        return (nsrs, callback)
+                    Nothing -> if slaveStateIsRed
+                        then do
+                            act <- liftM snd $ scheduleLocalColdUpdate' (downcast slaveLocalState) event
+                            modifyMVar_ slaveRepFinalizers $ return . M.insert rev act
+                        else
+                            void $ scheduleColdUpdate slaveLocalState event
+                    Just rid -> do
+                        act <- modifyMVar slaveRequests $ \srs -> do
+                            debug $ "This is the Update for Request " ++ show rid
+                            let (icallback, timeoutId) = fromMaybe (error $ "Callback not found: " ++ show rid) (M.lookup rid srs)
+                            callback <- icallback
+                            killThread timeoutId
+                            let nsrs = M.delete rid srs
+                            return (nsrs, callback)
+                        when slaveStateIsRed $
+                            modifyMVar_ slaveRepFinalizers $ return . M.insert rev act
                 -- send reply: we're done
                 unless syncing $ sendToMaster slaveZmqSocket $ RepDone rev
                 return rev
@@ -316,7 +370,7 @@ repArchive SlaveState{..} rev = do
 --      - Request Update from Master
 --      - Master issues Update with same RequestID
 --      - repHandler replicates and puts result in MVar
-scheduleSlaveUpdate :: UpdateEvent e => SlaveState (EventState e) -> e -> IO (MVar (EventResult e))
+scheduleSlaveUpdate :: (UpdateEvent e, Typeable (EventState e)) => SlaveState (EventState e) -> e -> IO (MVar (EventResult e))
 scheduleSlaveUpdate slaveState@SlaveState{..} event = do
         debug "Update by Slave."
         result <- newEmptyMVar
@@ -326,9 +380,12 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
             let encoded = runPutLazy (safePut event)
             sendToMaster slaveZmqSocket $ ReqUpdate reqId (methodTag event, encoded)
             timeoutID <- forkIO $ timeoutRequest slaveState reqId
-            let callback = do
-                    hd <- scheduleUpdate slaveLocalState event
-                    void $ forkIO $ putMVar result =<< takeMVar hd
+            let callback = if slaveStateIsRed
+                    then scheduleLocalUpdate' (downcast slaveLocalState) event result
+                    else do
+                        hd <- scheduleUpdate slaveLocalState event
+                        void $ forkIO $ putMVar result =<< takeMVar hd
+                        return (return ())      -- bogus finalizer
             return $ M.insert reqId (callback, timeoutID) srs
         return result
 
@@ -376,7 +433,7 @@ liberateState SlaveState{..} = do
         debug "Closing local state."
         closeAcidState slaveLocalState
 
-slaveToAcidState :: IsAcidic st => SlaveState st -> AcidState st
+slaveToAcidState :: (IsAcidic st, Typeable st)  => SlaveState st -> AcidState st
 slaveToAcidState slaveState
   = AcidState { _scheduleUpdate    = scheduleSlaveUpdate slaveState
               , scheduleColdUpdate = undefined

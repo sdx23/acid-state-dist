@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable, RecordWildCards #-}
+{-# LANGUAGE DeriveDataTypeable, RecordWildCards, FlexibleContexts #-}
 --------------------------------------------------------------------------------
 {- |
   Module      :  Data.Acid.Centered.Master
@@ -20,6 +20,8 @@ module Data.Acid.Centered.Master
     (
       openMasterState
     , openMasterStateFrom
+    , openRedMasterState
+    , openRedMasterStateFrom
     , createArchiveGlobally
     , MasterState(..)
     ) where
@@ -38,12 +40,12 @@ import Data.Acid.Centered.Common
 
 import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, throwTo)
 import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan, dupChan)
-import Control.Monad (when, unless, void, forM_, liftM2)
+import Control.Monad (when, unless, void, forM_, liftM2, liftM)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
 import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
                                takeMVar, putMVar, isEmptyMVar,
-                               modifyMVar_, withMVar)
+                               modifyMVar, modifyMVar_, withMVar)
 import Control.Exception (handle, throw, SomeException, AsyncException(..))
 
 import System.ZMQ4 (Context, Socket, Router(..), Receiver,
@@ -67,8 +69,11 @@ import Safe (headDef)
 data MasterState st
     = MasterState { localState :: AcidState st
                   , nodeStatus :: MVar NodeStatus
+                  , repRedundancy :: Int
+                  , repFinalizers :: MVar (Map Revision (IO ()))
                   , masterStateLock :: MVar ()
                   , masterRevision :: MVar NodeRevision
+                  , masterRevisionN :: MVar NodeRevision
                   , masterReplicationChan :: Chan ReplicationItem
                   , masterReplicationChanN :: Chan ReplicationItem
                   , masterReqThreadId :: MVar ThreadId
@@ -82,7 +87,7 @@ data MasterState st
 
 type NodeIdentity = ByteString
 type NodeStatus = Map NodeIdentity NodeRevision
-type Callback = IO ()
+type Callback = IO (IO ())      -- an IO action that returns a finalizer
 data ReplicationItem =
       RIEnd
     | RICheckpoint
@@ -141,11 +146,17 @@ updateNodeStatus MasterState{..} ident r =
     modifyMVar_ nodeStatus $ \ns -> do
         when (M.findWithDefault 0 ident ns /= (r - 1)) $
             error $ "Invalid increment of node status " ++ show ns ++ " -> " ++ show r
-        let rs = M.adjust (+1) ident ns
-        return rs
-        --withMVar masterRevision $ \mr -> do
-        --    when (allNodesDone mr rs) $ debug $ "All nodes done replicating " ++ show mr
-        --    where allNodesDone mrev = M.fold (\v t -> (v == mrev) && t) True
+        let rns = M.adjust (+1) ident ns
+        -- only for redundant operation:
+        when ((repRedundancy > 1) && (M.size (M.filter (>=r) rns) >= (repRedundancy - 1))) $ do
+            debug $ "Full replication of " ++ show r
+            -- finalize local replication
+            modifyMVar_ repFinalizers $ \rf -> do
+                rf M.! r
+                return $ M.delete r rf
+            -- send out FullRep signal
+            forM_ (M.keys ns) $ sendToSlave zmqSocket (FullRep r)
+        return rns
 
 -- | Connect a new Slave by getting it up-to-date,
 --   i.e. send all past events as Updates. This is fire&forget.
@@ -170,13 +181,27 @@ connectNode MasterState{..} i revision =
                 pastUpdates <- getPastUpdates localState revision
                 forM_ pastUpdates $ \(r, u) -> sendSyncUpdate zmqSocket r u i
             sendToSlave zmqSocket (SyncDone crc) i
-            return $ M.insert i mr ns
+            let nns = M.insert i mr ns
+            -- only for redundant operation:
+            when (repRedundancy > 1) $ checkRepStatus mr nns
+            return nns
     where
         cpRevision (Checkpoint r _) = r
         sendSyncCheckpoint sock (Checkpoint cr encoded) =
             sendToSlave sock (DoSyncCheckpoint cr encoded)
         sendSyncUpdate sock r encoded =
             sendToSlave sock (DoSyncRep r encoded)
+        -- FIXME: do this better (less than maxRev is possible in corner cases)
+        checkRepStatus maxRev pns =
+            when (M.size (M.filter (>= maxRev) pns) >= (repRedundancy-2)) $ do
+                debug $ "Full replication up to " ++ show maxRev
+                -- finalize local replication
+                modifyMVar_ repFinalizers $ \rf -> do
+                    forM_ (filter (<= maxRev) (M.keys rf)) $ \r -> rf M.! r
+                    return $ M.filterWithKey (\k _ -> k > maxRev) rf
+                -- send out FullRep signal
+                forM_ (M.keys pns) $ sendToSlave zmqSocket (FullRepTo maxRev)
+
 
 -- | Fetch past Updates from FileLog for replication.
 getPastUpdates :: (Typeable st) => AcidState st -> Int -> IO [(Int, Tagged CSL.ByteString)]
@@ -227,15 +252,39 @@ openMasterStateFrom :: (IsAcidic st, Typeable st) =>
             -> PortNumber   -- ^ port to bind to
             -> st           -- ^ initial state
             -> IO (AcidState st)
-openMasterStateFrom directory address port initialState = do
+openMasterStateFrom directory address port =
+    openRedMasterStateFrom directory address port 0
+
+-- | Open the master state with redundant replication. The directory for the local state files is the
+-- default one ("state/NameOfState").
+openRedMasterState :: (IsAcidic st, Typeable st) =>
+               String       -- ^ address to bind (useful to listen on specific interfaces only)
+            -> PortNumber   -- ^ port to bind to
+            -> Int          -- ^ guarantee n-redundant replication
+            -> st           -- ^ initial state
+            -> IO (AcidState st)
+openRedMasterState address port red initialState =
+    openRedMasterStateFrom ("state" </> show (typeOf initialState)) address port red initialState
+
+-- | Open the master state from a specific location with redundant replication.
+openRedMasterStateFrom :: (IsAcidic st, Typeable st) =>
+               FilePath     -- ^ location of the local state files
+            -> String       -- ^ address to bind (useful to listen on specific interfaces only)
+            -> PortNumber   -- ^ port to bind to
+            -> Int          -- ^ guarantee n-redundant replication
+            -> st           -- ^ initial state
+            -> IO (AcidState st)
+openRedMasterStateFrom directory address port red initialState = do
         debug "opening master state"
         -- local
         lst <- openLocalStateFrom directory initialState
         let levs = localEvents $ downcast lst
         lrev <- atomically $ readTVar $ logNextEntryId levs
         rev <- newMVar lrev
+        revN <- newMVar lrev
         repChan <- newChan
         repChanN <- dupChan repChan
+        repFin <- newMVar M.empty
         ns <- newMVar M.empty
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
@@ -252,8 +301,11 @@ openMasterStateFrom directory address port initialState = do
         lock <- newEmptyMVar
         let masterState = MasterState { localState = lst
                                       , nodeStatus = ns
+                                      , repRedundancy = red
+                                      , repFinalizers = repFin
                                       , masterStateLock = lock
                                       , masterRevision = rev
+                                      , masterRevisionN = revN
                                       , masterReplicationChan = repChan
                                       , masterReplicationChanN = repChanN
                                       , masterRepLThreadId = repTidL
@@ -300,16 +352,21 @@ closeMasterState MasterState{..} = do
         closeAcidState localState
 
 -- | Update on master site.
-scheduleMasterUpdate :: UpdateEvent event => MasterState (EventState event) -> event -> IO (MVar (EventResult event))
+scheduleMasterUpdate :: (UpdateEvent event, Typeable (EventState event)) => MasterState (EventState event) -> event -> IO (MVar (EventResult event))
 scheduleMasterUpdate masterState@MasterState{..} event = do
         debug "Update by Master."
         unlocked <- isEmptyMVar masterStateLock
         if not unlocked then error "State is locked!"
         else do
             result <- newEmptyMVar
-            let callback = do
+            let callback = if repRedundancy > 1
+                then
+                    -- the returned action fills in result when executed later
+                    scheduleLocalUpdate' (downcast localState) event result
+                else do
                     hd <- scheduleUpdate localState event
                     void $ forkIO (putMVar result =<< takeMVar hd)
+                    return (return ())      -- bogus finalizer
             let encoded = runPutLazy (safePut event)
             queueRepItem masterState (RIUpdate (methodTag event, encoded) (Left callback))
             return result
@@ -319,7 +376,7 @@ queueRepItem :: MasterState st -> ReplicationItem -> IO ()
 queueRepItem MasterState{..} = writeChan masterReplicationChan
 
 -- | The local replication handler. Takes care to run Updates locally.
-masterReplicationHandlerL :: MasterState st -> IO ()
+masterReplicationHandlerL :: (Typeable st) => MasterState st -> IO ()
 masterReplicationHandlerL MasterState{..} = do
     mtid <- myThreadId
     putMVar masterRepLThreadId mtid
@@ -337,14 +394,18 @@ masterReplicationHandlerL MasterState{..} = do
                     createCheckpoint localState
                     loop
                 RIUpdate event sink -> do
-                    -- todo: this is not the acutual update number, since
-                    -- splitting up the chan
-                    -- also: be careful, this kills performance
-                    --withMVar masterRevision $ \mr ->
-                    --    debug $ "Replicating Update myself to " ++ show (mr + 1)
-                    case sink of
-                        Left callback   -> callback
-                        _               -> void $ scheduleColdUpdate localState event
+                    if repRedundancy > 1
+                    then do
+                        act <- case sink of
+                                Left callback   -> callback
+                                _               -> liftM snd $ scheduleLocalColdUpdate' (downcast localState) event
+                        -- act finalizes the transaction - will be run after full replication
+                        rev <- modifyMVar masterRevision $ \r -> return (r+1,r+1)
+                        modifyMVar_ repFinalizers $ return . M.insert rev act
+                    else
+                        case sink of
+                            Left callback   -> void callback
+                            _               -> void $ scheduleColdUpdate localState event
                     loop
     loop
     -- signal that we're done
@@ -363,19 +424,19 @@ masterReplicationHandlerN MasterState{..} = do
                 RIArchive -> do
                     withMVar nodeStatus $ \ns -> do
                         debug "Sending archive request to Slaves."
-                        withMVar masterRevision $ \mr ->
+                        withMVar masterRevisionN $ \mr ->
                             forM_ (M.keys ns) $ sendArchive zmqSocket mr
                     loop
                 RICheckpoint -> do
                     withMVar nodeStatus $ \ns -> do
                         debug "Sending Checkpoint Request to Slaves."
-                        withMVar masterRevision $ \mr ->
+                        withMVar masterRevisionN $ \mr ->
                             forM_ (M.keys ns) $ sendCheckpoint zmqSocket mr
                     loop
                 RIUpdate event sink -> do
                     withMVar nodeStatus $ \ns -> do
                         debug $ "Sending Update to Slaves, there are " ++ show (M.size ns)
-                        modifyMVar_ masterRevision $ \mrOld -> do
+                        modifyMVar_ masterRevisionN $ \mrOld -> do
                             let mr = mrOld + 1
                             case sink of
                                 Left _ -> forM_ (M.keys ns) $ sendUpdate zmqSocket mr Nothing event
@@ -415,7 +476,7 @@ createArchiveGlobally acid = do
     queueRepItem masterState RIArchive
 
 
-toAcidState :: IsAcidic st => MasterState st -> AcidState st
+toAcidState :: (IsAcidic st, Typeable st) => MasterState st -> AcidState st
 toAcidState master
   = AcidState { _scheduleUpdate    = scheduleMasterUpdate master
               , scheduleColdUpdate = scheduleColdUpdate $ localState master

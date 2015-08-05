@@ -22,9 +22,13 @@ module Data.Acid.Centered
       PortNumber
     , openMasterState
     , openMasterStateFrom
+    , openRedMasterState
+    , openRedMasterStateFrom
     , MasterState(..)
     , enslaveState
     , enslaveStateFrom
+    , enslaveRedState
+    , enslaveRedStateFrom
     , SlaveState(..)
     ) where
 

@@ -68,7 +68,6 @@ type RequestID = Int
 -- | We use CRC16 for now.
 type Crc = Word16
 
-
 #ifdef nodebug
 -- | Debugging disabled.
 debug :: String -> IO ()
@@ -91,6 +90,8 @@ data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
                    | DoCheckpoint Revision
                    | DoSyncCheckpoint Revision CSL.ByteString
                    | DoArchive Revision
+                   | FullRep Revision
+                   | FullRepTo Revision
                    | MayQuit
                    | MasterQuit
                   deriving (Show)
@@ -111,6 +112,8 @@ instance Serialize MasterMessage where
         DoCheckpoint r       -> putWord8 3 >> put r
         DoSyncCheckpoint r d -> putWord8 4 >> put r >> put d
         DoArchive r          -> putWord8 5 >> put r
+        FullRep r            -> putWord8 6 >> put r
+        FullRepTo r          -> putWord8 7 >> put r
         MayQuit              -> putWord8 8
         MasterQuit           -> putWord8 9
     get = do
@@ -122,6 +125,8 @@ instance Serialize MasterMessage where
             3 -> liftM DoCheckpoint get
             4 -> liftM2 DoSyncCheckpoint get get
             5 -> liftM DoArchive get
+            6 -> liftM FullRep get
+            7 -> liftM FullRepTo get
             8 -> return MayQuit
             9 -> return MasterQuit
             _ -> error $ "Data.Serialize.get failed for MasterMessage: invalid tag " ++ show tag

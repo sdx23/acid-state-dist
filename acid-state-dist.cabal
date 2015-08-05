@@ -150,6 +150,24 @@ test-suite NReplication
   build-depends:    base, directory, mtl,
                     safecopy, acid-state, acid-state-dist
 
+test-suite UpdateError
+  main-is:          UpdateError.hs
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  ghc-options:      -Wall -threaded
+  default-language: Haskell2010
+  build-depends:    base, directory, mtl,
+                    safecopy, acid-state, acid-state-dist
+
+test-suite SyncTimeout
+  main-is:          SyncTimeout.hs
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  ghc-options:      -Wall -threaded
+  default-language: Haskell2010
+  build-depends:    base, directory, mtl,
+                    safecopy, acid-state, acid-state-dist
+
 ----------------------------------------------------------------------
 -- Benchmarks
 benchmark Local

@@ -1,4 +1,4 @@
-test:
+all-test:
 	cabal clean
 	cabal configure --enable-test
 	cabal build

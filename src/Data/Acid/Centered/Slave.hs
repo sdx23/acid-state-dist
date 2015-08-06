@@ -56,8 +56,8 @@ import qualified Control.Concurrent.Event as Event
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
 import Control.Exception (handle, throw, SomeException, ErrorCall(..), AsyncException(..))
 
-import Data.Map (Map)
-import qualified Data.Map as M
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IM
 import Data.Maybe (fromMaybe)
 
 import qualified Data.ByteString.Lazy.Char8 as CSL
@@ -68,7 +68,7 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 data SlaveState st
     = SlaveState { slaveLocalState :: AcidState st
                  , slaveStateIsRed :: Bool
-                 , slaveRepFinalizers :: MVar (Map Revision (IO ()))
+                 , slaveRepFinalizers :: MVar (IntMap (IO ()))
                  , slaveRepChan :: Chan SlaveRepItem
                  , slaveSyncDone :: Event.Event
                  , slaveRevision :: MVar NodeRevision
@@ -83,7 +83,7 @@ data SlaveState st
                  } deriving (Typeable)
 
 -- | Memory of own Requests sent to Master.
-type SlaveRequests = Map RequestID (IO (IO ()),ThreadId)
+type SlaveRequests = IntMap (IO (IO ()),ThreadId)
 
 -- | One Update + Metainformation to replicate.
 data SlaveRepItem =
@@ -148,14 +148,14 @@ enslaveMayRedStateFrom isRed directory address port initialState = do
         lrev <- atomically $ readTVar $ logNextEntryId levs
         rev <- newMVar lrev
         debug $ "Opening enslaved state at revision " ++ show lrev
-        srs <- newMVar M.empty
+        srs <- newMVar IM.empty
         lastReqId <- newMVar 0
         repChan <- newChan
         syncDone <- Event.new
         reqTid <- newEmptyMVar
         repTid <- newEmptyMVar
         parTid <- myThreadId
-        repFin <- newMVar M.empty
+        repFin <- newMVar IM.empty
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
@@ -215,12 +215,12 @@ slaveRequestHandler slaveState@SlaveState{..} = do
                             DoArchive r -> queueRepItem slaveState (SRIArchive r)
                             -- Full replication of a revision
                             FullRep r -> modifyMVar_ slaveRepFinalizers $ \rf -> do
-                                            rf M.! r
-                                            return $ M.delete r rf
+                                            rf IM.! r
+                                            return $ IM.delete r rf
                             -- Full replication of events up to revision
                             FullRepTo r -> modifyMVar_ slaveRepFinalizers $ \rf -> do
-                                            let (ef, nrf) = M.partitionWithKey (\k _ -> k <= r) rf
-                                            sequence_ (M.elems ef)
+                                            let (ef, nrf) = IM.partitionWithKey (\k _ -> k <= r) rf
+                                            sequence_ (IM.elems ef)
                                             return nrf
                             -- We are allowed to Quit.
                             MayQuit -> writeChan slaveRepChan SRIEnd
@@ -327,19 +327,19 @@ replicateUpdate slaveState@SlaveState{..} rev reqId event syncing = do
                     Nothing -> if slaveStateIsRed
                         then do
                             act <- liftM snd $ scheduleLocalColdUpdate' (downcast slaveLocalState) event
-                            modifyMVar_ slaveRepFinalizers $ return . M.insert rev act
+                            modifyMVar_ slaveRepFinalizers $ return . IM.insert rev act
                         else
                             void $ scheduleColdUpdate slaveLocalState event
                     Just rid -> do
                         act <- modifyMVar slaveRequests $ \srs -> do
                             debug $ "This is the Update for Request " ++ show rid
-                            let (icallback, timeoutId) = fromMaybe (error $ "Callback not found: " ++ show rid) (M.lookup rid srs)
+                            let (icallback, timeoutId) = fromMaybe (error $ "Callback not found: " ++ show rid) (IM.lookup rid srs)
                             callback <- icallback
                             killThread timeoutId
-                            let nsrs = M.delete rid srs
+                            let nsrs = IM.delete rid srs
                             return (nsrs, callback)
                         when slaveStateIsRed $
-                            modifyMVar_ slaveRepFinalizers $ return . M.insert rev act
+                            modifyMVar_ slaveRepFinalizers $ return . IM.insert rev act
                 -- send reply: we're done
                 unless syncing $ sendToMaster slaveZmqSocket $ RepDone rev
                 return rev
@@ -386,7 +386,7 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
                         hd <- scheduleUpdate slaveLocalState event
                         void $ forkIO $ putMVar result =<< takeMVar hd
                         return (return ())      -- bogus finalizer
-            return $ M.insert reqId (callback, timeoutID) srs
+            return $ IM.insert reqId (callback, timeoutID) srs
         return result
 
 -- | Ensures requests are actually answered or fail.
@@ -394,7 +394,7 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
 timeoutRequest :: SlaveState st -> RequestID -> IO ()
 timeoutRequest SlaveState{..} reqId = do
     threadDelay $ 5*1000*1000
-    stillThere <- withMVar slaveRequests (return . M.member reqId)
+    stillThere <- withMVar slaveRequests (return . IM.member reqId)
     when stillThere $ throwTo slaveParentThreadId $ ErrorCall "Update-Request timed out."
 
 -- | Send a message to Master.
@@ -410,7 +410,7 @@ liberateState SlaveState{..} = do
         _ <- takeMVar slaveLastRequestID
         -- check / wait unprocessed requests
         debug "Waiting for Requests to finish."
-        waitPoll 100 (withMVar slaveRequests (return . M.null))
+        waitPoll 100 (withMVar slaveRequests (return . IM.null))
         -- send master quit message
         sendToMaster slaveZmqSocket SlaveQuit
         -- wait replication chan, only if sync done

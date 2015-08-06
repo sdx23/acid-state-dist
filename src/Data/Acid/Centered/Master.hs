@@ -57,6 +57,8 @@ import System.FilePath ( (</>) )
 
 import qualified Data.Map as M
 import Data.Map (Map)
+import qualified Data.IntMap as IM
+import Data.IntMap (IntMap)
 import qualified Data.ByteString.Lazy.Char8 as CSL
 import qualified Data.ByteString.Char8 as CS
 import Data.ByteString.Char8 (ByteString)
@@ -70,7 +72,7 @@ data MasterState st
     = MasterState { localState :: AcidState st
                   , nodeStatus :: MVar NodeStatus
                   , repRedundancy :: Int
-                  , repFinalizers :: MVar (Map Revision (IO ()))
+                  , repFinalizers :: MVar (IntMap (IO ()))
                   , masterStateLock :: MVar ()
                   , masterRevision :: MVar NodeRevision
                   , masterRevisionN :: MVar NodeRevision
@@ -160,8 +162,8 @@ updateNodeStatus MasterState{..} ident r =
             debug $ "Full replication of " ++ show r
             -- finalize local replication
             modifyMVar_ repFinalizers $ \rf -> do
-                rf M.! r
-                return $ M.delete r rf
+                rf IM.! r
+                return $ IM.delete r rf
             -- send out FullRep signal
             forM_ (M.keys ns) $ sendToSlave zmqSocket (FullRep r)
         return rns
@@ -205,8 +207,8 @@ connectNode MasterState{..} i revision =
                 debug $ "Full replication up to " ++ show maxRev
                 -- finalize local replication
                 modifyMVar_ repFinalizers $ \rf -> do
-                    forM_ (filter (<= maxRev) (M.keys rf)) $ \r -> rf M.! r
-                    return $ M.filterWithKey (\k _ -> k > maxRev) rf
+                    forM_ (filter (<= maxRev) (IM.keys rf)) $ \r -> rf IM.! r
+                    return $ IM.filterWithKey (\k _ -> k > maxRev) rf
                 -- send out FullRep signal
                 forM_ (M.keys pns) $ sendToSlave zmqSocket (FullRepTo maxRev)
 
@@ -292,7 +294,7 @@ openRedMasterStateFrom directory address port red initialState = do
         revN <- newMVar lrev
         repChan <- newChan
         repChanN <- dupChan repChan
-        repFin <- newMVar M.empty
+        repFin <- newMVar IM.empty
         ns <- newMVar M.empty
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
@@ -410,7 +412,7 @@ masterReplicationHandlerL MasterState{..} = do
                                 _               -> liftM snd $ scheduleLocalColdUpdate' (downcast localState) event
                             return (r+1,(r+1,a))
                         -- act finalizes the transaction - will be run after full replication
-                        modifyMVar_ repFinalizers $ return . M.insert rev act
+                        modifyMVar_ repFinalizers $ return . IM.insert rev act
                     else
                         modifyMVar_ masterRevision $ \r -> do
                             case sink of

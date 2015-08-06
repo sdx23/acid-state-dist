@@ -450,9 +450,9 @@ masterReplicationHandlerN MasterState{..} = do
                         modifyMVar_ masterRevisionN $ \mrOld -> do
                             let mr = mrOld + 1
                             case sink of
-                                Left _ -> forM_ (M.keys ns) $ sendUpdate zmqSocket mr Nothing event
+                                Left _ -> forM_ (M.keys $ M.filter (<mr) ns) $ sendUpdate zmqSocket mr Nothing event
                                 Right (reqID, reqNodeIdent) -> do
-                                    let noReqSlaves = filter (/= reqNodeIdent) $ M.keys ns
+                                    let noReqSlaves = filter (/= reqNodeIdent) $ M.keys $ M.filter (<mr) ns
                                     sendUpdate zmqSocket mr (Just reqID) event reqNodeIdent
                                     forM_ noReqSlaves $ sendUpdate zmqSocket mr Nothing event
                             return mr

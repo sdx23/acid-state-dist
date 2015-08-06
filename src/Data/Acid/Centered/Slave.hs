@@ -345,7 +345,7 @@ replicateUpdate slaveState@SlaveState{..} rev reqId event syncing = do
                 return rev
             else do
                 sendToMaster slaveZmqSocket RepError
-                void $ error $ "Replication failed at revision " ++ show rev ++ " -> " ++ show nr
+                void $ error $ "Replication failed at revision " ++ show nr ++ " -> " ++ show rev
                 void $ forkIO $ liberateState slaveState
                 return nr
 

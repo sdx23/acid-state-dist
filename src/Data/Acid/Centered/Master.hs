@@ -152,8 +152,8 @@ removeFromNodeStatus nodeStatus ident =
 updateNodeStatus :: MasterState st -> NodeIdentity -> Int -> IO ()
 updateNodeStatus MasterState{..} ident r =
     modifyMVar_ nodeStatus $ \ns -> do
-        when (M.findWithDefault 0 ident ns /= (r - 1)) $
-            error $ "Invalid increment of node status " ++ show ns ++ " -> " ++ show r
+        when (ns M.! ident /= (r - 1)) $
+            error $ "Invalid increment of node status " ++ show (ns M.! ident) ++ " -> " ++ show r
         let rns = M.adjust (+1) ident ns
         -- only for redundant operation:
         when ((repRedundancy > 1) && (M.size (M.filter (>=r) rns) >= (repRedundancy - 1))) $ do

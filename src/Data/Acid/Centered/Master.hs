@@ -160,19 +160,19 @@ updateNodeStatus MasterState{..} ident r =
 
 -- | Connect a new Slave by getting it up-to-date,
 --   i.e. send all past events as Updates. This is fire&forget.
---   todo: check HWM
 connectNode :: (IsAcidic st, Typeable st) => MasterState st -> NodeIdentity -> Revision -> IO ()
 connectNode MasterState{..} i revision =
+    -- locking masterRevision prohibits additional events written on disk
     withMVar masterRevision $ \mr ->
         modifyMVar_ nodeStatus $ \ns -> do
-            -- todo: do we need to lock masterState for crc?
+            -- crc generated from localCore thus corresponds to disk
             crc <- crcOfState localState
             -- if there has been one/more checkpoint in between:
             lastCp <- getLastCheckpointRev localState
             let lastCpRev = cpRevision lastCp
             debug $ "Found checkpoint at revision " ++ show lastCpRev
             if lastCpRev > revision then do
-                -- send last checkpoint and events from after then
+                -- send last checkpoint and newer events
                 sendSyncCheckpoint zmqSocket lastCp i
                 pastUpdates <- getPastUpdates localState lastCpRev
                 forM_ pastUpdates $ \(r, u) -> sendSyncUpdate zmqSocket r u i
@@ -396,16 +396,19 @@ masterReplicationHandlerL MasterState{..} = do
                 RIUpdate event sink -> do
                     if repRedundancy > 1
                     then do
-                        act <- case sink of
+                        (rev, act) <- modifyMVar masterRevision $ \r -> do
+                            a <- case sink of
                                 Left callback   -> callback
                                 _               -> liftM snd $ scheduleLocalColdUpdate' (downcast localState) event
+                            return (r+1,(r+1,a))
                         -- act finalizes the transaction - will be run after full replication
-                        rev <- modifyMVar masterRevision $ \r -> return (r+1,r+1)
                         modifyMVar_ repFinalizers $ return . M.insert rev act
                     else
-                        case sink of
-                            Left callback   -> void callback
-                            _               -> void $ scheduleColdUpdate localState event
+                        modifyMVar_ masterRevision $ \r -> do
+                            case sink of
+                                Left callback   -> void callback
+                                _               -> void $ scheduleColdUpdate localState event
+                            return (r+1)
                     loop
     loop
     -- signal that we're done

@@ -22,6 +22,11 @@ $(deriveSafeCopy 0 'base ''IntState)
 setState :: Int -> Update IntState ()
 setState value = put (IntState value)
 
+setStateEven :: Int -> Update IntState Bool
+setStateEven value = if even value
+    then put (IntState value) >> return True
+    else return False
+
 getState :: Query IntState Int
 getState = do
     IntState val <- ask
@@ -32,4 +37,4 @@ incrementState = do
     IntState val <- get
     put (IntState (val + 1))
 
-$(makeAcidic ''IntState ['setState, 'getState, 'incrementState])
+$(makeAcidic ''IntState ['setState, 'setStateEven, 'getState, 'incrementState])

@@ -379,7 +379,7 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
         modifyMVar_ slaveRequests $ \srs -> do
             let encoded = runPutLazy (safePut event)
             sendToMaster slaveZmqSocket $ ReqUpdate reqId (methodTag event, encoded)
-            timeoutID <- forkIO $ timeoutRequest slaveState reqId
+            timeoutID <- forkIO $ timeoutRequest slaveState reqId result
             let callback = if slaveStateIsRed
                     then scheduleLocalUpdate' (downcast slaveLocalState) event result
                     else do
@@ -390,12 +390,14 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
         return result
 
 -- | Ensures requests are actually answered or fail.
--- TODO: put error into result-mvar too
-timeoutRequest :: SlaveState st -> RequestID -> IO ()
-timeoutRequest SlaveState{..} reqId = do
+--   On timeout the Slave dies, not the thread that invoked the Update.
+timeoutRequest :: SlaveState st -> RequestID -> MVar m -> IO ()
+timeoutRequest SlaveState{..} reqId mvar = do
     threadDelay $ 5*1000*1000
     stillThere <- withMVar slaveRequests (return . IM.member reqId)
-    when stillThere $ throwTo slaveParentThreadId $ ErrorCall "Update-Request timed out."
+    when stillThere $ do
+        putMVar mvar $ error "Update-Request timed out."
+        throwTo slaveParentThreadId $ ErrorCall "Update-Request timed out."
 
 -- | Send a message to Master.
 sendToMaster :: MVar (Socket Dealer) -> SlaveMessage -> IO ()

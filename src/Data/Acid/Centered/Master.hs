@@ -38,7 +38,7 @@ import Data.Serialize (decode, encode, runPutLazy)
 
 import Data.Acid.Centered.Common
 
-import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, throwTo)
+import Control.Concurrent (forkIO, ThreadId, myThreadId)
 import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan, dupChan)
 import Control.Monad (when, unless, void, forM_, liftM2, liftM)
 import Control.Monad.STM (atomically)
@@ -46,7 +46,7 @@ import Control.Concurrent.STM.TVar (readTVar)
 import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
                                takeMVar, putMVar, isEmptyMVar,
                                modifyMVar, modifyMVar_, withMVar)
-import Control.Exception (handle, throw, SomeException, AsyncException(..))
+import Control.Exception (handle, throwTo, SomeException)
 
 import System.ZMQ4 (Context, Socket, Router(..), Receiver,
                     setReceiveHighWM, setSendHighWM, restrict,
@@ -133,10 +133,8 @@ masterRequestHandler masterState@MasterState{..} = do
             loop
     loop
     where
-        -- FIXME: actually we'd like our own exception for graceful exit
-        killHandler :: AsyncException -> IO ()
-        killHandler ThreadKilled = return ()
-        killHandler e = throw e
+        killHandler :: AcidException -> IO ()
+        killHandler GracefulExit = return ()
         identityIsValid i = do
             isMember <- withMVar nodeStatus $ return . (i `M.member`)
             if isMember then return True
@@ -351,7 +349,7 @@ closeMasterState MasterState{..} = do
         putMVar masterRepNThreadId mtid
         -- kill handler
         debug "Killing request handler."
-        withMVar masterReqThreadId killThread
+        withMVar masterReqThreadId $ flip throwTo GracefulExit
         -- cleanup zmq
         debug "Closing down zmq."
         withMVar zmqSocket $ \sock -> do

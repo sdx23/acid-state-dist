@@ -44,7 +44,7 @@ import System.ZMQ4 (Context, Socket, Dealer(..),
                     connect, disconnect, send, receive)
 import System.FilePath ( (</>) )
 
-import Control.Concurrent (forkIO, throwTo, ThreadId, myThreadId, killThread, threadDelay)
+import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
                                 withMVar, modifyMVar, modifyMVar_,
                                 takeMVar, putMVar)
@@ -54,7 +54,7 @@ import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar, writeTVar)
 import qualified Control.Concurrent.Event as Event
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
-import Control.Exception (handle, throw, SomeException, ErrorCall(..), AsyncException(..))
+import Control.Exception (handle, throwTo, SomeException, ErrorCall(..))
 
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
@@ -230,10 +230,8 @@ slaveRequestHandler slaveState@SlaveState{..} = do
             loop
     loop
     where
-        -- FIXME: actually we'd like our own exception for graceful exit
-        killHandler :: AsyncException -> IO ()
-        killHandler ThreadKilled = return ()
-        killHandler e = throw e
+        killHandler :: AcidException -> IO ()
+        killHandler GracefulExit = return ()
 
 -- | After sync check CRC
 onSyncDone :: (IsAcidic st, Typeable st) => SlaveState st -> Crc -> IO ()
@@ -423,8 +421,7 @@ liberateState SlaveState{..} = do
             putMVar slaveRepThreadId mtid
         -- kill handler threads
         debug "Killing request handler."
-        withMVar slaveReqThreadId killThread
-        --withMVar slaveReqThreadId $ \t -> throwTo t GracefulExit
+        withMVar slaveReqThreadId $ flip throwTo GracefulExit
         -- cleanup zmq
         debug "Closing down zmq."
         withMVar slaveZmqSocket $ \s -> do

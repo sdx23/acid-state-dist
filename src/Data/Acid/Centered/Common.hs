@@ -24,6 +24,7 @@ module Data.Acid.Centered.Common
     , PortNumber
     , SlaveMessage(..)
     , MasterMessage(..)
+    , AcidException(..)
     ) where
 
 import Data.Acid.Core (Tagged, withCoreState)
@@ -36,6 +37,7 @@ import Control.Monad (liftM, liftM2, liftM3,
                       unless, when
                      )
 import Control.Concurrent (threadDelay)
+import Control.Exception (Exception)
 import qualified Data.ByteString.Lazy.Char8 as CSL
 import Data.Serialize (Serialize(..), put, get,
                        putWord8, getWord8,
@@ -83,6 +85,11 @@ debugLock = unsafePerformIO L.new
 debug :: String -> IO ()
 debug = L.with debugLock . hPutStrLn stderr
 #endif
+
+data AcidException = GracefulExit
+      deriving (Show, Typeable)
+
+instance Exception AcidException
 
 -- | Messages the Master sends to Slaves.
 data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)

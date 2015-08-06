@@ -115,9 +115,10 @@ masterRequestHandler masterState@MasterState{..} = do
                     -- New Slave joined.
                     NewSlave r -> connectNode masterState ident r
                     -- Slave is done replicating.
-                    RepDone r -> updateNodeStatus masterState ident r
+                    RepDone r -> whenM (identityIsValid ident) $
+                        updateNodeStatus masterState ident r
                     -- Slave sends an Udate.
-                    ReqUpdate rid event ->
+                    ReqUpdate rid event -> whenM (identityIsValid ident) $
                         queueRepItem masterState (RIUpdate event (Right (rid, ident)))
                     -- Slave quits.
                     SlaveQuit -> do
@@ -134,6 +135,13 @@ masterRequestHandler masterState@MasterState{..} = do
         killHandler :: AsyncException -> IO ()
         killHandler ThreadKilled = return ()
         killHandler e = throw e
+        identityIsValid i = do
+            isMember <- withMVar nodeStatus $ return . (i `M.member`)
+            if isMember then return True
+            else do
+                debug $ "Request by unknown node [" ++ CS.unpack i ++ "]"
+                sendToSlave zmqSocket MayQuit i
+                return False
 
 -- | Remove a Slave node from NodeStatus.
 removeFromNodeStatus :: MVar NodeStatus -> NodeIdentity -> IO ()

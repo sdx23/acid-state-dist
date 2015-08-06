@@ -14,6 +14,7 @@
 module Data.Acid.Centered.Common
     (
       debug
+    , whenM
     , waitPoll
     , crcOfState
     , Crc
@@ -32,7 +33,7 @@ import Data.Acid (AcidState, IsAcidic)
 import Data.Acid.CRC (crc16)
 
 import Control.Monad (liftM, liftM2, liftM3,
-                      unless
+                      unless, when
                      )
 import Control.Concurrent (threadDelay)
 import qualified Data.ByteString.Lazy.Char8 as CSL
@@ -159,3 +160,7 @@ crcOfState state = do
 -- | By polling, wait until predicate fulfilled.
 waitPoll :: Int -> IO Bool -> IO ()
 waitPoll t p = p >>= \e -> unless e $ threadDelay t >> waitPoll t p
+
+-- | Monadic when
+whenM :: Monad m => m Bool -> m () -> m ()
+whenM b a = b >>= flip when a

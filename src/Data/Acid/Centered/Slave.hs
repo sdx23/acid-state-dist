@@ -5,11 +5,9 @@
   Copyright   :  ?
 
   Maintainer  :  max.voit+hdv@with-eyes.net
-  Portability :  ?
+  Portability :  non-portable (uses GHC extensions)
 
-  This module provides the slave part of a replication backend for acid state,
-  centered around the master. Thus in case of partitions no updates may be
-  accepted and the system blocks.
+  The Slave part of a the Centered replication backend for acid state.
 
 -}
 
@@ -92,8 +90,10 @@ data SlaveRepItem =
     | SRIArchive Revision
     | SRIUpdate Revision (Maybe RequestID) (Tagged CSL.ByteString)
 
--- | Open a local State as Slave for a Master. The directory for the local state
--- files is the default one ("state/NameOfState").
+-- | Open a local State as Slave for a Master.
+--
+-- The directory for the local state files is the default one ("state/[typeOf
+-- state]").
 enslaveState :: (IsAcidic st, Typeable st) =>
             String          -- ^ hostname of the Master
          -> PortNumber      -- ^ port to connect to
@@ -102,8 +102,10 @@ enslaveState :: (IsAcidic st, Typeable st) =>
 enslaveState address port initialState =
     enslaveStateFrom ("state" </> show (typeOf initialState)) address port initialState
 
--- | Open a local State as Slave for a Master. The directory for the local state
--- files is the default one ("state/NameOfState").
+-- | Open a local State as Slave for a Master.
+--
+-- The directory for the local state files is the default one ("state/[typeOf
+-- state]").
 enslaveRedState :: (IsAcidic st, Typeable st) =>
             String          -- ^ hostname of the Master
          -> PortNumber      -- ^ port to connect to

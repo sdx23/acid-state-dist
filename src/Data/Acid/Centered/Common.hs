@@ -5,9 +5,9 @@
   Copyright   :  ?
 
   Maintainer  :  max.voit+hdv@with-eyes.net
-  Portability :  ?
+  Portability :  non-portable (uses GHC extensions)
 
-  Stuff common to Master and Slave
+  Stuff common to Master and Slave in Centered systems.
 
 -}
 
@@ -86,6 +86,7 @@ debug :: String -> IO ()
 debug = L.with debugLock . hPutStrLn stderr
 #endif
 
+-- | Internally used for killing handler threads.
 data AcidException = GracefulExit
       deriving (Show, Typeable)
 

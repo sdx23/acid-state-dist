@@ -5,11 +5,9 @@
   Copyright   :  ?
 
   Maintainer  :  max.voit+hdv@with-eyes.net
-  Portability :  ?
+  Portability :  non-portable (uses GHC extensions)
 
-  This module provides a replication backend for acid state, centered around
-  the master. Thus in case of partitions no updates may be accepted and the
-  system blocks.
+  The Master part of the Centered replication backend for acid state.
 
 -}
 {- big chunks still todo:
@@ -243,8 +241,9 @@ receiveFrame sock = do
                         ++ take 20 (show smsg)
             return (ident, smsg)
 
--- | Open the master state. The directory for the local state files is the
--- default one ("state/NameOfState").
+-- | Open the Master state.
+--
+-- The directory for the local state files is the default one ("state/[typeOf state]/").
 openMasterState :: (IsAcidic st, Typeable st) =>
                String       -- ^ address to bind (useful to listen on specific interfaces only)
             -> PortNumber   -- ^ port to bind to
@@ -263,8 +262,10 @@ openMasterStateFrom :: (IsAcidic st, Typeable st) =>
 openMasterStateFrom directory address port =
     openRedMasterStateFrom directory address port 0
 
--- | Open the master state with redundant replication. The directory for the local state files is the
--- default one ("state/NameOfState").
+-- | Open the master state with /n/-redundant replication.
+--
+-- The directory for the local state files is the default one ("state/[typeOf
+-- state]/").
 openRedMasterState :: (IsAcidic st, Typeable st) =>
                String       -- ^ address to bind (useful to listen on specific interfaces only)
             -> PortNumber   -- ^ port to bind to
@@ -279,7 +280,7 @@ openRedMasterStateFrom :: (IsAcidic st, Typeable st) =>
                FilePath     -- ^ location of the local state files
             -> String       -- ^ address to bind (useful to listen on specific interfaces only)
             -> PortNumber   -- ^ port to bind to
-            -> Int          -- ^ guarantee n-redundant replication
+            -> Int          -- ^ guarantee /n/-redundant replication
             -> st           -- ^ initial state
             -> IO (AcidState st)
 openRedMasterStateFrom directory address port red initialState = do

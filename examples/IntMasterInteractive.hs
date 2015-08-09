@@ -6,7 +6,7 @@ import Data.Acid.Centered.Master (createArchiveGlobally)
 import Data.SafeCopy
 import Data.Typeable
 
-import Control.Monad (forever, forM_)
+import Control.Monad (forever, replicateM_)
 import System.Exit (exitSuccess)
 
 -- state structures
@@ -38,7 +38,7 @@ main = do
                 putStrLn "State updated."
             ('i':_) -> update acid IncrementState >> putStrLn "State incremented."
             ('k':_) -> do
-                forM_ [1..1000] $ const $ update acid IncrementState
+                replicateM_ 1000 $ update acid IncrementState
                 putStrLn "State incremented 1k times."
             _ -> putStrLn "Unknown command." >> putStrLn usage
 

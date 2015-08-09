@@ -5,7 +5,7 @@ import Data.Acid.Centered
 import Data.SafeCopy
 import Data.Typeable
 
-import Control.Monad (forever)
+import Control.Monad (forever, replicateM_)
 import System.Exit (exitSuccess)
 
 -- state structures
@@ -30,6 +30,9 @@ main = do
                 update acid (SetState (read val :: Int))
                 putStrLn "State updated."
             ('i':_) -> update acid IncrementState
+            ('h':_) -> do
+                replicateM_ 100 $ update acid IncrementState
+                putStrLn "State incremented 100 times."
             _ -> putStrLn "Unknown command." >> putStrLn usage
 
 
@@ -38,4 +41,5 @@ usage = "Possible commands:\
         \\n  x    exit\
         \\n  q    query the state\
         \\n  u v  update to value v\
-        \\n  i    increment"
+        \\n  i    increment\
+        \\n  h    increment 100 times"

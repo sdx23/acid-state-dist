@@ -30,10 +30,17 @@ module Data.Acid.Centered
 -- Open your AcidState using one of the functions below. Afterwards the usual
 -- interface of acid state is available.
 --
--- Always make sure to have sensible exception management since a lot more error
--- sources exist with this backend than do for a 'Data.Acid.Local' AcidState.
+-- Always make sure to have sensible exception management since naturally a lot
+-- more error sources exist with this backend than do for a 'Data.Acid.Local'
+-- AcidState.
+-- Using 'Control.Exception.bracket' is recommended for achieving this
+-- conveniently:
 --
--- This can be achieved as follows: TODO
+-- > main = bracket
+-- >          (enslaveState ...)
+-- >          closeAcidState
+-- >          $ \acid -> do
+-- >               ...
 --
 -- 'Data.Acid.createCheckpoint' issued on Master is a global operation,
 -- while issued on a Slave it is not.
@@ -72,10 +79,6 @@ module Data.Acid.Centered
     , enslaveRedStateFrom
     -- * Types
     , PortNumber
-    -- ** Internal state structures
-    -- | Normally not needed, but exposed to enable for use in certain cases.
-    , MasterState(..)
-    , SlaveState(..)
     ) where
 
 import Data.Acid.Centered.Master

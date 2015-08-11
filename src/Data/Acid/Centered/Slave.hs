@@ -36,7 +36,7 @@ import Data.Acid.Log
 import Data.Acid.Centered.Common
 
 import System.ZMQ4 (Context, Socket, Dealer(..),
-                    setReceiveHighWM, setSendHighWM, restrict,
+                    setReceiveHighWM, setSendHighWM, setLinger, restrict,
                     poll, Poll(..), Event(..),
                     context, term, socket, close,
                     connect, disconnect, send, receive)
@@ -228,7 +228,8 @@ slaveRequestHandler slaveState@SlaveState{..} unmask = do
                             MayQuit -> writeChan slaveRepChan SRIEnd
                             -- We are requested to Quit - shall be handled by
                             -- 'bracket' usage by user.
-                            MasterQuit -> error "Data.Acid.Centered.Slave: Master quit."
+                            MasterQuit -> throwTo slaveParentThreadId $
+                                ErrorCall "Data.Acid.Centered.Slave: Master quit."
                             -- no other messages possible, enforced by type checker
             loop
     loop
@@ -425,6 +426,8 @@ liberateState SlaveState{..} = do
         -- cleanup zmq
         debug "Closing down zmq."
         withMVar slaveZmqSocket $ \s -> do
+            -- avoid the socket hanging around
+            setLinger (restrict (1000 :: Int)) s
             disconnect s slaveZmqAddr
             close s
         term slaveZmqContext

@@ -42,7 +42,7 @@ import System.ZMQ4 (Context, Socket, Dealer(..),
                     connect, disconnect, send, receive)
 import System.FilePath ( (</>) )
 
-import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, threadDelay)
+import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, threadDelay, forkIOWithUnmask)
 import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
                                 withMVar, modifyMVar, modifyMVar_,
                                 takeMVar, putMVar)
@@ -182,17 +182,17 @@ enslaveMayRedStateFrom isRed directory address port initialState = do
                                     , slaveZmqAddr = addr
                                     , slaveZmqSocket = msock
                                     }
-        void $ forkIO $ slaveRequestHandler slaveState
+        void $ forkIOWithUnmask $ slaveRequestHandler slaveState
         void $ forkIO $ slaveReplicationHandler slaveState
         return $ slaveToAcidState slaveState
 
 -- | Replication handler of the Slave.
-slaveRequestHandler :: (IsAcidic st, Typeable st) => SlaveState st -> IO ()
-slaveRequestHandler slaveState@SlaveState{..} = do
+slaveRequestHandler :: (IsAcidic st, Typeable st) => SlaveState st -> (IO () -> IO ()) -> IO ()
+slaveRequestHandler slaveState@SlaveState{..} unmask = do
     mtid <- myThreadId
     putMVar slaveReqThreadId mtid
     let loop = handle (\e -> throwTo slaveParentThreadId (e :: SomeException)) $
-          handle killHandler $ do
+            unmask $ handle killHandler $ do
             --waitRead =<< readMVar slaveZmqSocket
             -- FIXME: we needn't poll if not for strange zmq behaviour
             re <- withMVar slaveZmqSocket $ \sock -> poll 100 [Sock sock [In] Nothing]

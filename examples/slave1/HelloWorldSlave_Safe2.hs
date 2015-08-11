@@ -1,0 +1,1 @@
+../HelloWorldSlave_Safe2.hs

@@ -226,8 +226,9 @@ slaveRequestHandler slaveState@SlaveState{..} unmask = do
                                             return nrf
                             -- We are allowed to Quit.
                             MayQuit -> writeChan slaveRepChan SRIEnd
-                            -- We are requested to Quit.
-                            MasterQuit -> void $ forkIO $ liberateState slaveState
+                            -- We are requested to Quit - shall be handled by
+                            -- 'bracket' usage by user.
+                            MasterQuit -> error "Data.Acid.Centered.Slave: Master quit."
                             -- no other messages possible, enforced by type checker
             loop
     loop
@@ -237,12 +238,10 @@ slaveRequestHandler slaveState@SlaveState{..} unmask = do
 
 -- | After sync check CRC
 onSyncDone :: (IsAcidic st, Typeable st) => SlaveState st -> Crc -> IO ()
-onSyncDone slaveState@SlaveState{..} crc = do
+onSyncDone SlaveState{..} crc = do
     localCrc <- crcOfState slaveLocalState
-    if crc /= localCrc then do
-        -- TODO: this is an error
-        putStrLn "Data.Acid.Centered.Slave: CRC mismatch after sync. Exiting."
-        void $ forkIO $ liberateState slaveState
+    if crc /= localCrc then
+        error "Data.Acid.Centered.Slave: CRC mismatch after sync."
     else do
         debug "Sync Done, CRC fine."
         Event.set slaveSyncDone
@@ -261,7 +260,7 @@ slaveReplicationHandler slaveState@SlaveState{..} = do
         putMVar slaveRepThreadId mtid
         -- todo: timeout is magic variable, make customizable?
         noTimeout <- Event.waitTimeout slaveSyncDone $ 10*1000*1000
-        unless noTimeout $ throwTo slaveParentThreadId $ ErrorCall "Slave took too long to sync, ran into timeout."
+        unless noTimeout $ throwTo slaveParentThreadId $ ErrorCall "Data.Acid.Centered.Slave: Took too long to sync. Timeout."
         let loop = handle (\e -> throwTo slaveParentThreadId (e :: SomeException)) $ do
                 mayRepItem <- readChan slaveRepChan
                 case mayRepItem of
@@ -287,7 +286,7 @@ replicateSyncCp SlaveState{..} rev encoded = do
     let lst = downcast slaveLocalState
     let core = localCore lst
     modifyMVar_ slaveRevision $ \sr -> do
-        when (sr > rev) $ error "Revision mismatch for checkpoint: Slave is newer."
+        when (sr > rev) $ error "Data.Acid.Centered.Slave: Revision mismatch for checkpoint: Slave is newer."
         -- todo: check
         modifyCoreState_ core $ \_ -> do
             writeIORef (localCopy lst) st
@@ -306,7 +305,7 @@ replicateSyncCp SlaveState{..} rev encoded = do
             takeMVar mvar
         decodeCheckpoint e =
             case runGetLazy safeGet e of
-                Left msg  -> error $ "Checkpoint could not be decoded: " ++ msg
+                Left msg  -> error $ "Data.Acid.Centered.Slave: Checkpoint could not be decoded: " ++ msg
                 Right val -> return val
 
 -- | Replicate Sync-Updates directly.
@@ -318,7 +317,7 @@ replicateSyncUpdate slaveState rev event = replicateUpdate slaveState rev Nothin
 --   put into the MVar in SlaveRequests.
 --   Other Updates are just replicated without using the result.
 replicateUpdate :: Typeable st => SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> Bool -> IO ()
-replicateUpdate slaveState@SlaveState{..} rev reqId event syncing = do
+replicateUpdate SlaveState{..} rev reqId event syncing = do
         debug $ "Got an Update to replicate " ++ show rev
         modifyMVar_ slaveRevision $ \nr -> if rev - 1 == nr
             then do
@@ -333,7 +332,7 @@ replicateUpdate slaveState@SlaveState{..} rev reqId event syncing = do
                     Just rid -> do
                         act <- modifyMVar slaveRequests $ \srs -> do
                             debug $ "This is the Update for Request " ++ show rid
-                            let (icallback, timeoutId) = fromMaybe (error $ "Callback not found: " ++ show rid) (IM.lookup rid srs)
+                            let (icallback, timeoutId) = fromMaybe (error $ "Data.Acid.Centered.Slave: Callback not found: " ++ show rid) (IM.lookup rid srs)
                             callback <- icallback
                             killThread timeoutId
                             let nsrs = IM.delete rid srs
@@ -345,8 +344,7 @@ replicateUpdate slaveState@SlaveState{..} rev reqId event syncing = do
                 return rev
             else do
                 sendToMaster slaveZmqSocket RepError
-                void $ error $ "Replication failed at revision " ++ show nr ++ " -> " ++ show rev
-                void $ forkIO $ liberateState slaveState
+                void $ error $ "Data.Acid.Centered.Slave: Replication failed at revision " ++ show nr ++ " -> " ++ show rev
                 return nr
 
 repCheckpoint :: SlaveState st -> Revision -> IO ()
@@ -396,8 +394,8 @@ timeoutRequest SlaveState{..} reqId mvar = do
     threadDelay $ 5*1000*1000
     stillThere <- withMVar slaveRequests (return . IM.member reqId)
     when stillThere $ do
-        putMVar mvar $ error "Update-Request timed out."
-        throwTo slaveParentThreadId $ ErrorCall "Update-Request timed out."
+        putMVar mvar $ error "Data.Acid.Centered.Slave: Update-Request timed out."
+        throwTo slaveParentThreadId $ ErrorCall "Data.Acid.Centered.Slave: Update-Request timed out."
 
 -- | Send a message to Master.
 sendToMaster :: MVar (Socket Dealer) -> SlaveMessage -> IO ()

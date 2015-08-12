@@ -34,9 +34,12 @@ slave master = handle eHandler $ do
     exitFailure
     where
         eHandler :: SomeException -> IO ()
-        eHandler e = when (show e == "Data.Acid.Centered.Slave: CRC mismatch after sync. Exiting.") $ do
-            closeAcidState master
-            exitSuccess
+        eHandler e = if show e == "Data.Acid.Centered.Slave: CRC mismatch after sync."
+            then do
+                putStrLn "CRC mismatch, fine."
+                closeAcidState master
+                exitSuccess
+            else putStrLn "Other exception: " >> print e
 
 main :: IO ()
 main = do

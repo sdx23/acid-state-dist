@@ -16,6 +16,7 @@ module Data.Acid.Centered.Common
       debug
     , whenM
     , waitPoll
+    , waitPollN
     , crcOfState
     , Crc
     , NodeRevision
@@ -168,6 +169,12 @@ crcOfState state = do
 -- | By polling, wait until predicate fulfilled.
 waitPoll :: Int -> IO Bool -> IO ()
 waitPoll t p = p >>= \e -> unless e $ threadDelay t >> waitPoll t p
+
+-- | By polling, wait until predicate fulfilled. Poll at max. n times.
+waitPollN :: Int -> Int -> IO Bool -> IO ()
+waitPollN t n p
+    | n == 0    = return ()
+    | otherwise = p >>= \e -> unless e $ threadDelay t >> waitPollN t (n-1) p
 
 -- | Monadic when
 whenM :: Monad m => m Bool -> m () -> m ()

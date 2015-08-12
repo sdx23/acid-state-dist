@@ -337,11 +337,10 @@ closeMasterState MasterState{..} = do
         -- disallow requests
         putMVar masterStateLock ()
         -- send nodes quit
-        debug "Nodes to quitting."
+        debug "Nodes quitting."
         withMVar nodeStatus $ mapM_ (sendToSlave zmqSocket MasterQuit) . M.keys
         -- wait all nodes done
-        waitPoll 100 (withMVar nodeStatus (return . M.null))
-        -- todo: this could use a timeout, there may be zombies
+        waitPollN 100 1000 (withMVar nodeStatus (return . M.null))
         -- wait replication chan
         debug "Waiting for repChans to empty."
         writeChan masterReplicationChan RIEnd

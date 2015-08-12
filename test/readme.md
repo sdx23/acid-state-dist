@@ -37,3 +37,19 @@ Updates containing 'error's are should fail when being scheduled.
 # SyncTimeout
 
 If there is no Master, synchronization is to time out.
+
+
+
+# Extended
+
+Some extended test cases not usually run by 'cabal test' as they require more
+time and/or special precautions.
+
+## ConnectionLoss
+
+Simulates one Slave connected to one Master, losing the network connection.
+This is achieved using iptables, invoked via sudo.
+
+## BigSuite
+
+

@@ -25,3 +25,15 @@ Slave joins only after generating the checkpoint).
 It is essential to keep ordering of events identical on all nodes. This test
 applies a non-commutative operation on the state to check this behaviour.
 
+# NReplication
+
+Test for the redundant operation mode. An Update shall only be accepted as soon
+as enough Slaves joined.
+
+# UpdateError
+
+Updates containing 'error's are should fail when being scheduled.
+
+# SyncTimeout
+
+If there is no Master, synchronization is to time out.

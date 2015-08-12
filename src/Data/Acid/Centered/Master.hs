@@ -42,7 +42,7 @@ import Control.Monad (when, unless, void, forM_, liftM2, liftM)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
 import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
-                               takeMVar, putMVar, isEmptyMVar,
+                               takeMVar, putMVar, tryPutMVar, isEmptyMVar,
                                modifyMVar, modifyMVar_, withMVar)
 import Control.Exception (handle, throwTo, SomeException)
 
@@ -332,10 +332,10 @@ openRedMasterStateFrom directory address port red initialState = do
 
 -- | Close the master state.
 closeMasterState :: MasterState st -> IO ()
-closeMasterState MasterState{..} = do
+closeMasterState MasterState{..} =
+    -- disallow requests
+    whenM (tryPutMVar masterStateLock ()) $ do
         debug "Closing master state."
-        -- disallow requests
-        putMVar masterStateLock ()
         -- send nodes quit
         debug "Nodes quitting."
         withMVar nodeStatus $ mapM_ (sendToSlave zmqSocket MasterQuit) . M.keys

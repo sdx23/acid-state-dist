@@ -43,9 +43,9 @@ import System.ZMQ4 (Context, Socket, Dealer(..),
 import System.FilePath ( (</>) )
 
 import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, threadDelay, forkIOWithUnmask)
-import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
+import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar, isEmptyMVar,
                                 withMVar, modifyMVar, modifyMVar_,
-                                takeMVar, putMVar)
+                                takeMVar, putMVar, tryPutMVar)
 import Data.IORef (writeIORef)
 import Control.Monad (void, when, unless, liftM)
 import Control.Monad.STM (atomically)
@@ -66,6 +66,7 @@ import qualified Data.ByteString.Lazy.Char8 as CSL
 data SlaveState st
     = SlaveState { slaveLocalState :: AcidState st
                  , slaveStateIsRed :: Bool
+                 , slaveStateLock :: MVar ()
                  , slaveRepFinalizers :: MVar (IntMap (IO ()))
                  , slaveRepChan :: Chan SlaveRepItem
                  , slaveSyncDone :: Event.Event
@@ -158,6 +159,7 @@ enslaveMayRedStateFrom isRed directory address port initialState = do
         repTid <- newEmptyMVar
         parTid <- myThreadId
         repFin <- newMVar IM.empty
+        lock <- newEmptyMVar
         -- remote
         let addr = "tcp://" ++ address ++ ":" ++ show port
         ctx <- context
@@ -169,6 +171,7 @@ enslaveMayRedStateFrom isRed directory address port initialState = do
         sendToMaster msock $ NewSlave lrev
         let slaveState = SlaveState { slaveLocalState = lst
                                     , slaveStateIsRed = isRed
+                                    , slaveStateLock = lock
                                     , slaveRepFinalizers = repFin
                                     , slaveRepChan = repChan
                                     , slaveSyncDone = syncDone
@@ -371,6 +374,9 @@ repArchive SlaveState{..} rev = do
 --      - repHandler replicates and puts result in MVar
 scheduleSlaveUpdate :: (UpdateEvent e, Typeable (EventState e)) => SlaveState (EventState e) -> e -> IO (MVar (EventResult e))
 scheduleSlaveUpdate slaveState@SlaveState{..} event = do
+    unlocked <- isEmptyMVar slaveStateLock
+    if not unlocked then error "State is locked."
+    else do
         debug "Update by Slave."
         result <- newEmptyMVar
         -- slaveLastRequestID is only modified here - and used for locking the state
@@ -404,11 +410,11 @@ sendToMaster msock smsg = withMVar msock $ \sock -> send sock [] (encode smsg)
 
 -- | Close an enslaved State.
 liberateState :: SlaveState st -> IO ()
-liberateState SlaveState{..} = do
+liberateState SlaveState{..} =
+    -- lock state against updates: disallow requests
+    -- todo: rather use a special value allowing exceptions in scheduleUpdate
+    whenM (tryPutMVar slaveStateLock ()) $ do
         debug "Closing Slave state..."
-        -- lock state against updates: disallow requests
-        -- todo: rather use a special value allowing exceptions in scheduleUpdate
-        _ <- takeMVar slaveLastRequestID
         -- check / wait unprocessed requests
         debug "Waiting for Requests to finish."
         waitPoll 100 (withMVar slaveRequests (return . IM.null))

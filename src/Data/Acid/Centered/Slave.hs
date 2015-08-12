@@ -354,7 +354,6 @@ replicateUpdate SlaveState{..} rev reqId event syncing = do
 repCheckpoint :: SlaveState st -> Revision -> IO ()
 repCheckpoint SlaveState{..} rev = do
     debug $ "Got Checkpoint request at revision: " ++ show rev
-    -- todo: check that we're at the correct revision
     withMVar slaveRevision $ \_ ->
         -- create checkpoint
         createCheckpoint slaveLocalState
@@ -362,7 +361,6 @@ repCheckpoint SlaveState{..} rev = do
 repArchive :: SlaveState st -> Revision -> IO ()
 repArchive SlaveState{..} rev = do
     debug $ "Got Archive request at revision: " ++ show rev
-    -- todo: at right revision?
     withMVar slaveRevision $ \_ ->
         createArchive slaveLocalState
 
@@ -412,7 +410,6 @@ sendToMaster msock smsg = withMVar msock $ \sock -> send sock [] (encode smsg)
 liberateState :: SlaveState st -> IO ()
 liberateState SlaveState{..} =
     -- lock state against updates: disallow requests
-    -- todo: rather use a special value allowing exceptions in scheduleUpdate
     whenM (tryPutMVar slaveStateLock ()) $ do
         debug "Closing Slave state..."
         -- check / wait unprocessed requests

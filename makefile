@@ -8,7 +8,7 @@ bench:
 	cabal clean
 	cabal configure --enable-benchmarks -f-debug
 	cabal build
-	mkdir benresults
+	[ -d benchresults ] || mkdir benchresults
 	cabal bench | tee -a benchresults/`git rev-parse HEAD`-`date -I`.bench
 
 clean-all-state:

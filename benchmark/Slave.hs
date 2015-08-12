@@ -36,6 +36,7 @@ main = do
         ]
 
     -- cleanup
-    putMVar sync ()
+    delaySec 5
     closeAcidState acid
+    putMVar sync ()
     exitSuccess

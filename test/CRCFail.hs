@@ -5,6 +5,7 @@ import Data.Acid.Centered
 
 import Control.Monad (void, when)
 import Control.Concurrent (threadDelay, forkIO)
+import Control.Concurrent.MVar
 import System.Exit (exitSuccess, exitFailure)
 import System.Directory (doesDirectoryExist, removeDirectoryRecursive)
 
@@ -23,8 +24,8 @@ cleanup path = do
     when sp $ removeDirectoryRecursive path
 
 -- actual test
-slave :: AcidState IntState -> IO ()
-slave master = handle eHandler $ do
+slave :: MVar () -> IO ()
+slave mBlock = handle eHandler $ do
     acid <- enslaveStateFrom "state/CRCFail/s1" "localhost" 3333 (IntState 23)
     -- at this point happens the crc fail - we check for an exception and
     -- thereby determine whether the test was successful
@@ -34,19 +35,17 @@ slave master = handle eHandler $ do
     exitFailure
     where
         eHandler :: SomeException -> IO ()
-        eHandler e = if show e == "Data.Acid.Centered.Slave: CRC mismatch after sync."
-            then do
+        eHandler e = when (show e == "Data.Acid.Centered.Slave: CRC mismatch after sync.") $ do
                 putStrLn "CRC mismatch, fine."
-                closeAcidState master
-                exitSuccess
-            else putStrLn "Other exception: " >> print e
+                putMVar mBlock ()
 
 main :: IO ()
 main = do
     cleanup "state/CRCFail"
     acid <- openMasterStateFrom "state/CRCFail/m" "127.0.0.1" 3333 (IntState 0)
-    void $ forkIO $ slave acid
-    delaySec 4
+    mBlock <- newEmptyMVar
+    void $ forkIO $ slave mBlock
+    takeMVar mBlock
     closeAcidState acid
     exitSuccess
 

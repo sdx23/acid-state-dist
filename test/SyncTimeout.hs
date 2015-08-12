@@ -32,7 +32,7 @@ main :: IO ()
 main = do
     cleanup "state/SyncTimeout"
     catch slave $ \(e :: SomeException) ->
-        if show e == "Slave took too long to sync, ran into timeout."
+        if show e == "Data.Acid.Centered.Slave: Took too long to sync. Timeout."
             then exitSuccess
             else exitFailure
 

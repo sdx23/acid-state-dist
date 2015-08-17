@@ -47,7 +47,7 @@ import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar, isEmptyMVar,
                                 withMVar, modifyMVar, modifyMVar_,
                                 takeMVar, putMVar, tryPutMVar)
 import Data.IORef (writeIORef)
-import Control.Monad (void, when, unless, liftM)
+import Control.Monad (void, when, unless)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar, writeTVar)
 import qualified Control.Concurrent.Event as Event
@@ -291,7 +291,6 @@ replicateSyncCp SlaveState{..} rev encoded = do
     let core = localCore lst
     modifyMVar_ slaveRevision $ \sr -> do
         when (sr > rev) $ error "Data.Acid.Centered.Slave: Revision mismatch for checkpoint: Slave is newer."
-        -- todo: check
         modifyCoreState_ core $ \_ -> do
             writeIORef (localCopy lst) st
             createCpFake lst encoded rev
@@ -329,7 +328,7 @@ replicateUpdate SlaveState{..} rev reqId event syncing = do
                 case reqId of
                     Nothing -> if slaveStateIsRed
                         then do
-                            act <- liftM snd $ scheduleLocalColdUpdate' (downcast slaveLocalState) event
+                            act <- newEmptyMVar >>= scheduleLocalColdUpdate' (downcast slaveLocalState) event 
                             modifyMVar_ slaveRepFinalizers $ return . IM.insert rev act
                         else
                             void $ scheduleColdUpdate slaveLocalState event
@@ -392,6 +391,28 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
             return $ IM.insert reqId (callback, timeoutID) srs
         return result
 
+-- | Cold Update on slave site. This enables for using Remote.
+scheduleSlaveColdUpdate :: Typeable st => SlaveState st -> Tagged CSL.ByteString -> IO (MVar CSL.ByteString)
+scheduleSlaveColdUpdate slaveState@SlaveState{..} encoded = do
+    unlocked <- isEmptyMVar slaveStateLock
+    if not unlocked then error "State is locked."
+    else do
+        debug "Cold Update by Slave."
+        result <- newEmptyMVar
+        -- slaveLastRequestID is only modified here - and used for locking the state
+        reqId <- modifyMVar slaveLastRequestID $ \x -> return (x+1,x+1)
+        modifyMVar_ slaveRequests $ \srs -> do
+            sendToMaster slaveZmqSocket $ ReqUpdate reqId encoded
+            timeoutID <- forkIO $ timeoutRequest slaveState reqId result
+            let callback = if slaveStateIsRed
+                    then scheduleLocalColdUpdate' (downcast slaveLocalState) encoded result
+                    else do
+                        hd <- scheduleColdUpdate slaveLocalState encoded
+                        void $ forkIO $ putMVar result =<< takeMVar hd
+                        return (return ())      -- bogus finalizer
+            return $ IM.insert reqId (callback, timeoutID) srs
+        return result
+
 -- | Ensures requests are actually answered or fail.
 --   On timeout the Slave dies, not the thread that invoked the Update.
 timeoutRequest :: SlaveState st -> RequestID -> MVar m -> IO ()
@@ -441,7 +462,7 @@ liberateState SlaveState{..} =
 slaveToAcidState :: (IsAcidic st, Typeable st)  => SlaveState st -> AcidState st
 slaveToAcidState slaveState
   = AcidState { _scheduleUpdate    = scheduleSlaveUpdate slaveState
-              , scheduleColdUpdate = undefined
+              , scheduleColdUpdate = scheduleSlaveColdUpdate slaveState
               , _query             = query $ slaveLocalState slaveState
               , queryCold          = queryCold $ slaveLocalState slaveState
               , createCheckpoint   = createCheckpoint $ slaveLocalState slaveState

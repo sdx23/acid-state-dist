@@ -38,7 +38,7 @@ import Data.Acid.Centered.Common
 
 import Control.Concurrent (forkIO, ThreadId, myThreadId)
 import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan, dupChan)
-import Control.Monad (when, unless, void, forM_, liftM2, liftM)
+import Control.Monad (when, unless, void, forM_, liftM2)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
 import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
@@ -379,6 +379,25 @@ scheduleMasterUpdate masterState@MasterState{..} event = do
             queueRepItem masterState (RIUpdate (methodTag event, encoded) (Left callback))
             return result
 
+-- | Cold Update on master site.
+scheduleMasterColdUpdate :: Typeable st => MasterState st -> Tagged CSL.ByteString -> IO (MVar CSL.ByteString)
+scheduleMasterColdUpdate masterState@MasterState{..} encoded = do
+        debug "Cold Update by Master."
+        unlocked <- isEmptyMVar masterStateLock
+        if not unlocked then error "State is locked!"
+        else do
+            result <- newEmptyMVar
+            let callback = if repRedundancy > 1
+                then
+                    -- the returned action fills in result when executed later
+                    scheduleLocalColdUpdate' (downcast localState) encoded result
+                else do
+                    hd <- scheduleColdUpdate localState encoded
+                    void $ forkIO (putMVar result =<< takeMVar hd)
+                    return (return ())      -- bogus finalizer
+            queueRepItem masterState (RIUpdate encoded (Left callback))
+            return result
+
 -- | Queue an RepItem (originating from the Master itself of an Slave via zmq)
 queueRepItem :: MasterState st -> ReplicationItem -> IO ()
 queueRepItem MasterState{..} = writeChan masterReplicationChan
@@ -407,7 +426,7 @@ masterReplicationHandlerL MasterState{..} = do
                         (rev, act) <- modifyMVar masterRevision $ \r -> do
                             a <- case sink of
                                 Left callback   -> callback
-                                _               -> liftM snd $ scheduleLocalColdUpdate' (downcast localState) event
+                                _               -> newEmptyMVar >>= scheduleLocalColdUpdate' (downcast localState) event
                             return (r+1,(r+1,a))
                         -- act finalizes the transaction - will be run after full replication
                         modifyMVar_ repFinalizers $ return . IM.insert rev act
@@ -490,7 +509,7 @@ createArchiveGlobally acid = do
 toAcidState :: (IsAcidic st, Typeable st) => MasterState st -> AcidState st
 toAcidState master
   = AcidState { _scheduleUpdate    = scheduleMasterUpdate master
-              , scheduleColdUpdate = scheduleColdUpdate $ localState master
+              , scheduleColdUpdate = scheduleMasterColdUpdate master
               , _query             = query $ localState master
               , queryCold          = queryCold $ localState master
               , createCheckpoint   = createMasterCheckpoint master

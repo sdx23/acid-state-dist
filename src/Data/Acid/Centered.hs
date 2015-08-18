@@ -1,7 +1,7 @@
 --------------------------------------------------------------------------------
 {- |
   Module      :  Data.Acid.Centered
-  Copyright   :  ?
+  Copyright   :  MIT
 
   Maintainer  :  max.voit+hdv@with-eyes.net
   Portability :  non-portable (uses GHC extensions)

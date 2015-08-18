@@ -28,24 +28,27 @@ module Data.Acid.Centered.Common
     , AcidException(..)
     ) where
 
+import Data.Typeable (Typeable)
+import Data.SafeCopy (safePut)
+
 import Data.Acid.Core (Tagged, withCoreState)
 import Data.Acid.Local (localCore)
 import Data.Acid.Abstract (downcast)
 import Data.Acid (AcidState, IsAcidic)
 import Data.Acid.CRC (crc16)
 
+import Control.Concurrent (threadDelay)
+
 import Control.Monad (liftM, liftM2, liftM3,
                       unless, when
                      )
-import Control.Concurrent (threadDelay)
 import Control.Exception (Exception)
-import qualified Data.ByteString.Lazy.Char8 as CSL
+
+import Data.ByteString.Lazy.Char8 (ByteString)
 import Data.Serialize (Serialize(..), put, get,
                        putWord8, getWord8,
                        runPutLazy
                       )
-import Data.Typeable (Typeable)
-import Data.SafeCopy (safePut)
 import Data.Word (Word16)
 
 #ifdef nodebug
@@ -94,11 +97,11 @@ data AcidException = GracefulExit
 instance Exception AcidException
 
 -- | Messages the Master sends to Slaves.
-data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
-                   | DoSyncRep Revision (Tagged CSL.ByteString)
+data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged ByteString)
+                   | DoSyncRep Revision (Tagged ByteString)
                    | SyncDone Crc
                    | DoCheckpoint Revision
-                   | DoSyncCheckpoint Revision CSL.ByteString
+                   | DoSyncCheckpoint Revision ByteString
                    | DoArchive Revision
                    | FullRep Revision
                    | FullRepTo Revision
@@ -110,7 +113,7 @@ data MasterMessage = DoRep Revision (Maybe RequestID) (Tagged CSL.ByteString)
 data SlaveMessage = NewSlave Int
                   | RepDone Int
                   | RepError
-                  | ReqUpdate RequestID (Tagged CSL.ByteString)
+                  | ReqUpdate RequestID (Tagged ByteString)
                   | SlaveQuit
                   deriving (Show)
 

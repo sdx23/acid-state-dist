@@ -35,6 +35,19 @@ import Data.Acid.Log
 
 import Data.Acid.Centered.Common
 
+import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, threadDelay, forkIOWithUnmask)
+import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar, isEmptyMVar,
+                                withMVar, modifyMVar, modifyMVar_,
+                                takeMVar, putMVar, tryPutMVar)
+import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
+import Control.Concurrent.STM.TVar (readTVar, writeTVar)
+import Data.IORef (writeIORef)
+import qualified Control.Concurrent.Event as Event
+
+import Control.Monad.STM (atomically)
+import Control.Monad (void, when, unless)
+import Control.Exception (handle, throwTo, SomeException, ErrorCall(..))
+
 import System.ZMQ4 (Context, Socket, Dealer(..),
                     setReceiveHighWM, setSendHighWM, setLinger, restrict,
                     poll, Poll(..), Event(..),
@@ -42,23 +55,11 @@ import System.ZMQ4 (Context, Socket, Dealer(..),
                     connect, disconnect, send, receive)
 import System.FilePath ( (</>) )
 
-import Control.Concurrent (forkIO, ThreadId, myThreadId, killThread, threadDelay, forkIOWithUnmask)
-import Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar, isEmptyMVar,
-                                withMVar, modifyMVar, modifyMVar_,
-                                takeMVar, putMVar, tryPutMVar)
-import Data.IORef (writeIORef)
-import Control.Monad (void, when, unless)
-import Control.Monad.STM (atomically)
-import Control.Concurrent.STM.TVar (readTVar, writeTVar)
-import qualified Control.Concurrent.Event as Event
-import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
-import Control.Exception (handle, throwTo, SomeException, ErrorCall(..))
-
-import Data.IntMap (IntMap)
-import qualified Data.IntMap as IM
+import Data.ByteString.Lazy.Char8 (ByteString)
 import Data.Maybe (fromMaybe)
 
-import qualified Data.ByteString.Lazy.Char8 as CSL
+import           Data.IntMap (IntMap)
+import qualified Data.IntMap as IM
 
 --------------------------------------------------------------------------------
 
@@ -89,7 +90,7 @@ data SlaveRepItem =
       SRIEnd
     | SRICheckpoint Revision
     | SRIArchive Revision
-    | SRIUpdate Revision (Maybe RequestID) (Tagged CSL.ByteString)
+    | SRIUpdate Revision (Maybe RequestID) (Tagged ByteString)
 
 -- | Open a local State as Slave for a Master.
 --
@@ -284,7 +285,7 @@ slaveReplicationHandler slaveState@SlaveState{..} = do
 
 -- | Replicate Sync-Checkpoints directly.
 replicateSyncCp :: (IsAcidic st, Typeable st) =>
-        SlaveState st -> Revision -> CSL.ByteString -> IO ()
+        SlaveState st -> Revision -> ByteString -> IO ()
 replicateSyncCp SlaveState{..} rev encoded = do
     st <- decodeCheckpoint encoded
     let lst = downcast slaveLocalState
@@ -312,14 +313,14 @@ replicateSyncCp SlaveState{..} rev encoded = do
                 Right val -> return val
 
 -- | Replicate Sync-Updates directly.
-replicateSyncUpdate :: Typeable st => SlaveState st -> Revision -> Tagged CSL.ByteString -> IO ()
+replicateSyncUpdate :: Typeable st => SlaveState st -> Revision -> Tagged ByteString -> IO ()
 replicateSyncUpdate slaveState rev event = replicateUpdate slaveState rev Nothing event True
 
 -- | Replicate an Update as requested by Master.
 --   Updates that were requested by this Slave are run locally and the result
 --   put into the MVar in SlaveRequests.
 --   Other Updates are just replicated without using the result.
-replicateUpdate :: Typeable st => SlaveState st -> Revision -> Maybe RequestID -> Tagged CSL.ByteString -> Bool -> IO ()
+replicateUpdate :: Typeable st => SlaveState st -> Revision -> Maybe RequestID -> Tagged ByteString -> Bool -> IO ()
 replicateUpdate SlaveState{..} rev reqId event syncing = do
         debug $ "Got an Update to replicate " ++ show rev
         modifyMVar_ slaveRevision $ \nr -> if rev - 1 == nr
@@ -392,7 +393,7 @@ scheduleSlaveUpdate slaveState@SlaveState{..} event = do
         return result
 
 -- | Cold Update on slave site. This enables for using Remote.
-scheduleSlaveColdUpdate :: Typeable st => SlaveState st -> Tagged CSL.ByteString -> IO (MVar CSL.ByteString)
+scheduleSlaveColdUpdate :: Typeable st => SlaveState st -> Tagged ByteString -> IO (MVar ByteString)
 scheduleSlaveColdUpdate slaveState@SlaveState{..} encoded = do
     unlocked <- isEmptyMVar slaveStateLock
     if not unlocked then error "State is locked."

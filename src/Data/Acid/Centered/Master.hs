@@ -26,24 +26,25 @@ module Data.Acid.Centered.Master
 
 import Data.Typeable
 import Data.SafeCopy
+import Data.Serialize (decode, encode, runPutLazy)
 
 import Data.Acid
 import Data.Acid.Core
 import Data.Acid.Abstract
 import Data.Acid.Local
 import Data.Acid.Log
-import Data.Serialize (decode, encode, runPutLazy)
 
 import Data.Acid.Centered.Common
 
 import Control.Concurrent (forkIO, ThreadId, myThreadId)
 import Control.Concurrent.Chan (Chan, newChan, writeChan, readChan, dupChan)
-import Control.Monad (when, unless, void, forM_, liftM2)
-import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar (readTVar)
 import Control.Concurrent.MVar(MVar, newMVar, newEmptyMVar,
                                takeMVar, putMVar, tryPutMVar, isEmptyMVar,
                                modifyMVar, modifyMVar_, withMVar)
+
+import Control.Monad.STM (atomically)
+import Control.Monad (when, unless, void, forM_, liftM2)
 import Control.Exception (handle, throwTo, SomeException)
 
 import System.ZMQ4 (Context, Socket, Router(..), Receiver,
@@ -53,13 +54,14 @@ import System.ZMQ4 (Context, Socket, Router(..), Receiver,
                     sendMulti, receiveMulti)
 import System.FilePath ( (</>) )
 
-import qualified Data.Map as M
-import Data.Map (Map)
-import qualified Data.IntMap as IM
-import Data.IntMap (IntMap)
 import qualified Data.ByteString.Lazy.Char8 as CSL
+import           Data.ByteString.Lazy.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as CS
-import Data.ByteString.Char8 (ByteString)
+
+import qualified Data.Map as M
+import           Data.Map (Map)
+import qualified Data.IntMap as IM
+import           Data.IntMap (IntMap)
 import qualified Data.List.NonEmpty as NEL
 import Safe (headDef)
 
@@ -85,14 +87,14 @@ data MasterState st
                   , zmqSocket :: MVar (Socket Router)
                   } deriving (Typeable)
 
-type NodeIdentity = ByteString
+type NodeIdentity = CS.ByteString
 type NodeStatus = Map NodeIdentity NodeRevision
 type Callback = IO (IO ())      -- an IO action that returns a finalizer
 data ReplicationItem =
       RIEnd
     | RICheckpoint
     | RIArchive
-    | RIUpdate (Tagged CSL.ByteString) (Either Callback (RequestID, NodeIdentity))
+    | RIUpdate (Tagged ByteString) (Either Callback (RequestID, NodeIdentity))
 
 -- | The request handler on master node. Does
 --      o handle receiving requests from nodes,
@@ -210,7 +212,7 @@ connectNode MasterState{..} i revision =
 
 
 -- | Fetch past Updates from FileLog for replication.
-getPastUpdates :: (Typeable st) => AcidState st -> Int -> IO [(Int, Tagged CSL.ByteString)]
+getPastUpdates :: (Typeable st) => AcidState st -> Int -> IO [(Int, Tagged ByteString)]
 getPastUpdates state startRev = liftM2 zip (return [(startRev+1)..]) (readEntriesFrom (localEvents $ downcast state) startRev)
 
 -- | Get the revision at which the last checkpoint was taken.
@@ -380,7 +382,7 @@ scheduleMasterUpdate masterState@MasterState{..} event = do
             return result
 
 -- | Cold Update on master site.
-scheduleMasterColdUpdate :: Typeable st => MasterState st -> Tagged CSL.ByteString -> IO (MVar CSL.ByteString)
+scheduleMasterColdUpdate :: Typeable st => MasterState st -> Tagged ByteString -> IO (MVar ByteString)
 scheduleMasterColdUpdate masterState@MasterState{..} encoded = do
         debug "Cold Update by Master."
         unlocked <- isEmptyMVar masterStateLock

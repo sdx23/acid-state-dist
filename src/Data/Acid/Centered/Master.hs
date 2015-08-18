@@ -146,7 +146,7 @@ masterRequestHandler masterState@MasterState{..} = do
 -- | Remove a Slave node from NodeStatus.
 removeFromNodeStatus :: MVar NodeStatus -> NodeIdentity -> IO ()
 removeFromNodeStatus nodeStatus ident =
-        modifyMVar_ nodeStatus $ return . M.delete ident
+    modifyMVar_ nodeStatus $ return . M.delete ident
 
 -- | Update the NodeStatus after a node has replicated an Update.
 updateNodeStatus :: MasterState st -> NodeIdentity -> Int -> IO ()
@@ -290,52 +290,52 @@ openRedMasterStateFrom :: (IsAcidic st, Typeable st) =>
             -> st           -- ^ initial state
             -> IO (AcidState st)
 openRedMasterStateFrom directory address port red initialState = do
-        debug "opening master state"
-        -- local
-        lst <- openLocalStateFrom directory initialState
-        let levs = localEvents $ downcast lst
-        lrev <- atomically $ readTVar $ logNextEntryId levs
-        rev <- newMVar lrev
-        revN <- newMVar lrev
-        repChan <- newChan
-        repChanN <- dupChan repChan
-        repFin <- newMVar IM.empty
-        ns <- newMVar M.empty
-        repTidL <- newEmptyMVar
-        repTidN <- newEmptyMVar
-        reqTid <- newEmptyMVar
-        parTid <- myThreadId
-        sLock <- newEmptyMVar
-        -- remote
-        let addr = "tcp://" ++ address ++ ":" ++ show port
-        ctx <- context
-        sock <- socket ctx Router
-        setReceiveHighWM (restrict (100*1000 :: Int)) sock
-        setSendHighWM (restrict (100*1000 :: Int)) sock
-        bind sock addr
-        msock <- newMVar sock
+    debug "opening master state"
+    -- local
+    lst <- openLocalStateFrom directory initialState
+    let levs = localEvents $ downcast lst
+    lrev <- atomically $ readTVar $ logNextEntryId levs
+    rev <- newMVar lrev
+    revN <- newMVar lrev
+    repChan <- newChan
+    repChanN <- dupChan repChan
+    repFin <- newMVar IM.empty
+    ns <- newMVar M.empty
+    repTidL <- newEmptyMVar
+    repTidN <- newEmptyMVar
+    reqTid <- newEmptyMVar
+    parTid <- myThreadId
+    sLock <- newEmptyMVar
+    -- remote
+    let addr = "tcp://" ++ address ++ ":" ++ show port
+    ctx <- context
+    sock <- socket ctx Router
+    setReceiveHighWM (restrict (100*1000 :: Int)) sock
+    setSendHighWM (restrict (100*1000 :: Int)) sock
+    bind sock addr
+    msock <- newMVar sock
 
-        let masterState = MasterState { localState = lst
-                                      , nodeStatus = ns
-                                      , repRedundancy = red
-                                      , repFinalizers = repFin
-                                      , masterStateLock = sLock
-                                      , masterRevision = rev
-                                      , masterRevisionN = revN
-                                      , masterReplicationChan = repChan
-                                      , masterReplicationChanN = repChanN
-                                      , masterRepLThreadId = repTidL
-                                      , masterRepNThreadId = repTidN
-                                      , masterReqThreadId = reqTid
-                                      , masterParentThreadId = parTid
-                                      , zmqContext = ctx
-                                      , zmqAddr = addr
-                                      , zmqSocket = msock
-                                      }
-        void $ forkIO $ masterRequestHandler masterState
-        void $ forkIO $ masterReplicationHandlerL masterState
-        void $ forkIO $ masterReplicationHandlerN masterState
-        return $ toAcidState masterState
+    let masterState = MasterState { localState = lst
+                                  , nodeStatus = ns
+                                  , repRedundancy = red
+                                  , repFinalizers = repFin
+                                  , masterStateLock = sLock
+                                  , masterRevision = rev
+                                  , masterRevisionN = revN
+                                  , masterReplicationChan = repChan
+                                  , masterReplicationChanN = repChanN
+                                  , masterRepLThreadId = repTidL
+                                  , masterRepNThreadId = repTidN
+                                  , masterReqThreadId = reqTid
+                                  , masterParentThreadId = parTid
+                                  , zmqContext = ctx
+                                  , zmqAddr = addr
+                                  , zmqSocket = msock
+                                  }
+    void $ forkIO $ masterRequestHandler masterState
+    void $ forkIO $ masterReplicationHandlerL masterState
+    void $ forkIO $ masterReplicationHandlerN masterState
+    return $ toAcidState masterState
 
 -- | Close the master state.
 closeMasterState :: MasterState st -> IO ()
@@ -369,41 +369,41 @@ closeMasterState MasterState{..} =
 -- | Update on master site.
 scheduleMasterUpdate :: (UpdateEvent event, Typeable (EventState event)) => MasterState (EventState event) -> event -> IO (MVar (EventResult event))
 scheduleMasterUpdate masterState@MasterState{..} event = do
-        debug "Update by Master."
-        unlocked <- isEmptyMVar masterStateLock
-        if not unlocked then error "State is locked!"
-        else do
-            result <- newEmptyMVar
-            let callback = if repRedundancy > 1
-                then
-                    -- the returned action fills in result when executed later
-                    scheduleLocalUpdate' (downcast localState) event result
-                else do
-                    hd <- scheduleUpdate localState event
-                    void $ forkIO (putMVar result =<< takeMVar hd)
-                    return (return ())      -- bogus finalizer
-            let encoded = runPutLazy (safePut event)
-            queueRepItem masterState (RIUpdate (methodTag event, encoded) (Left callback))
-            return result
+    debug "Update by Master."
+    unlocked <- isEmptyMVar masterStateLock
+    if not unlocked then error "State is locked!"
+    else do
+        result <- newEmptyMVar
+        let callback = if repRedundancy > 1
+            then
+                -- the returned action fills in result when executed later
+                scheduleLocalUpdate' (downcast localState) event result
+            else do
+                hd <- scheduleUpdate localState event
+                void $ forkIO (putMVar result =<< takeMVar hd)
+                return (return ())      -- bogus finalizer
+        let encoded = runPutLazy (safePut event)
+        queueRepItem masterState (RIUpdate (methodTag event, encoded) (Left callback))
+        return result
 
 -- | Cold Update on master site.
 scheduleMasterColdUpdate :: Typeable st => MasterState st -> Tagged ByteString -> IO (MVar ByteString)
 scheduleMasterColdUpdate masterState@MasterState{..} encoded = do
-        debug "Cold Update by Master."
-        unlocked <- isEmptyMVar masterStateLock
-        if not unlocked then error "State is locked!"
-        else do
-            result <- newEmptyMVar
-            let callback = if repRedundancy > 1
-                then
-                    -- the returned action fills in result when executed later
-                    scheduleLocalColdUpdate' (downcast localState) encoded result
-                else do
-                    hd <- scheduleColdUpdate localState encoded
-                    void $ forkIO (putMVar result =<< takeMVar hd)
-                    return (return ())      -- bogus finalizer
-            queueRepItem masterState (RIUpdate encoded (Left callback))
-            return result
+    debug "Cold Update by Master."
+    unlocked <- isEmptyMVar masterStateLock
+    if not unlocked then error "State is locked!"
+    else do
+        result <- newEmptyMVar
+        let callback = if repRedundancy > 1
+            then
+                -- the returned action fills in result when executed later
+                scheduleLocalColdUpdate' (downcast localState) encoded result
+            else do
+                hd <- scheduleColdUpdate localState encoded
+                void $ forkIO (putMVar result =<< takeMVar hd)
+                return (return ())      -- bogus finalizer
+        queueRepItem masterState (RIUpdate encoded (Left callback))
+        return result
 
 -- | Queue an RepItem (originating from the Master itself of an Slave via zmq)
 queueRepItem :: MasterState st -> ReplicationItem -> IO ()

@@ -145,52 +145,52 @@ enslaveMayRedStateFrom :: (IsAcidic st, Typeable st) =>
          -> st              -- ^ initial state
          -> IO (AcidState st)
 enslaveMayRedStateFrom isRed directory address port initialState = do
-        -- local
-        lst <- openLocalStateFrom directory initialState
-        lrev <- getLocalRevision lst
-        rev <- newMVar lrev
-        debug $ "Opening enslaved state at revision " ++ show lrev
-        srs <- newMVar IM.empty
-        lastReqId <- newMVar 0
-        repChan <- newChan
-        syncDone <- Event.new
-        reqTid <- newEmptyMVar
-        repTid <- newEmptyMVar
-        parTid <- myThreadId
-        repFin <- newMVar IM.empty
-        sLock <- newEmptyMVar
-        -- remote
-        let addr = "tcp://" ++ address ++ ":" ++ show port
-        ctx <- context
-        sock <- socket ctx Dealer
-        setReceiveHighWM (restrict (100*1000 :: Int)) sock
-        setSendHighWM (restrict (100*1000 :: Int)) sock
-        connect sock addr
-        msock <- newMVar sock
-        sendToMaster msock $ NewSlave lrev
+    -- local
+    lst <- openLocalStateFrom directory initialState
+    lrev <- getLocalRevision lst
+    rev <- newMVar lrev
+    debug $ "Opening enslaved state at revision " ++ show lrev
+    srs <- newMVar IM.empty
+    lastReqId <- newMVar 0
+    repChan <- newChan
+    syncDone <- Event.new
+    reqTid <- newEmptyMVar
+    repTid <- newEmptyMVar
+    parTid <- myThreadId
+    repFin <- newMVar IM.empty
+    sLock <- newEmptyMVar
+    -- remote
+    let addr = "tcp://" ++ address ++ ":" ++ show port
+    ctx <- context
+    sock <- socket ctx Dealer
+    setReceiveHighWM (restrict (100*1000 :: Int)) sock
+    setSendHighWM (restrict (100*1000 :: Int)) sock
+    connect sock addr
+    msock <- newMVar sock
+    sendToMaster msock $ NewSlave lrev
 
-        let slaveState = SlaveState { slaveLocalState = lst
-                                    , slaveStateIsRed = isRed
-                                    , slaveStateLock = sLock
-                                    , slaveRepFinalizers = repFin
-                                    , slaveRepChan = repChan
-                                    , slaveSyncDone = syncDone
-                                    , slaveRevision = rev
-                                    , slaveRequests = srs
-                                    , slaveLastRequestID = lastReqId
-                                    , slaveReqThreadId = reqTid
-                                    , slaveRepThreadId = repTid
-                                    , slaveParentThreadId = parTid
-                                    , slaveZmqContext = ctx
-                                    , slaveZmqAddr = addr
-                                    , slaveZmqSocket = msock
-                                    }
-        void $ forkIOWithUnmask $ slaveRequestHandler slaveState
-        void $ forkIO $ slaveReplicationHandler slaveState
-        return $ slaveToAcidState slaveState
-        where
-            getLocalRevision =
-                atomically . readTVar . logNextEntryId . localEvents . downcast
+    let slaveState = SlaveState { slaveLocalState = lst
+                                , slaveStateIsRed = isRed
+                                , slaveStateLock = sLock
+                                , slaveRepFinalizers = repFin
+                                , slaveRepChan = repChan
+                                , slaveSyncDone = syncDone
+                                , slaveRevision = rev
+                                , slaveRequests = srs
+                                , slaveLastRequestID = lastReqId
+                                , slaveReqThreadId = reqTid
+                                , slaveRepThreadId = repTid
+                                , slaveParentThreadId = parTid
+                                , slaveZmqContext = ctx
+                                , slaveZmqAddr = addr
+                                , slaveZmqSocket = msock
+                                }
+    void $ forkIOWithUnmask $ slaveRequestHandler slaveState
+    void $ forkIO $ slaveReplicationHandler slaveState
+    return $ slaveToAcidState slaveState
+    where
+        getLocalRevision =
+            atomically . readTVar . logNextEntryId . localEvents . downcast
 
 -- | Replication handler of the Slave.
 slaveRequestHandler :: (IsAcidic st, Typeable st) => SlaveState st -> (IO () -> IO ()) -> IO ()
@@ -258,31 +258,31 @@ onSyncDone SlaveState{..} crc = do
 -- We use the Chan so Sync-Updates and normal ones can be interleaved.
 queueRepItem :: SlaveState st -> SlaveRepItem -> IO ()
 queueRepItem SlaveState{..} repItem = do
-        debug "Queuing RepItem."
-        writeChan slaveRepChan repItem
+    debug "Queuing RepItem."
+    writeChan slaveRepChan repItem
 
 -- | Replicates content of Chan.
 slaveReplicationHandler :: Typeable st => SlaveState st -> IO ()
 slaveReplicationHandler slaveState@SlaveState{..} = do
-        mtid <- myThreadId
-        putMVar slaveRepThreadId mtid
+    mtid <- myThreadId
+    putMVar slaveRepThreadId mtid
 
-        -- todo: timeout is magic variable, make customizable
-        noTimeout <- Event.waitTimeout slaveSyncDone $ 10*1000*1000
-        unless noTimeout $ throwTo slaveParentThreadId $
-            ErrorCall "Data.Acid.Centered.Slave: Took too long to sync. Timeout."
+    -- todo: timeout is magic variable, make customizable
+    noTimeout <- Event.waitTimeout slaveSyncDone $ 10*1000*1000
+    unless noTimeout $ throwTo slaveParentThreadId $
+        ErrorCall "Data.Acid.Centered.Slave: Took too long to sync. Timeout."
 
-        let loop = handle (\e -> throwTo slaveParentThreadId (e :: SomeException)) $ do
-                mayRepItem <- readChan slaveRepChan
-                case mayRepItem of
-                    SRIEnd          -> return ()
-                    SRICheckpoint r -> repCheckpoint slaveState r               >> loop
-                    SRIArchive r    -> repArchive slaveState r                  >> loop
-                    SRIUpdate r i d -> replicateUpdate slaveState r i d False   >> loop
-        loop
+    let loop = handle (\e -> throwTo slaveParentThreadId (e :: SomeException)) $ do
+            mayRepItem <- readChan slaveRepChan
+            case mayRepItem of
+                SRIEnd          -> return ()
+                SRICheckpoint r -> repCheckpoint slaveState r               >> loop
+                SRIArchive r    -> repArchive slaveState r                  >> loop
+                SRIUpdate r i d -> replicateUpdate slaveState r i d False   >> loop
+    loop
 
-        -- signal that we're done
-        void $ takeMVar slaveRepThreadId
+    -- signal that we're done
+    void $ takeMVar slaveRepThreadId
 
 -- | Replicate Sync-Checkpoints directly.
 replicateSyncCp :: (IsAcidic st, Typeable st) =>
@@ -323,39 +323,39 @@ replicateSyncUpdate slaveState rev event = replicateUpdate slaveState rev Nothin
 --   Other Updates are just replicated without using the result.
 replicateUpdate :: Typeable st => SlaveState st -> Revision -> Maybe RequestID -> Tagged ByteString -> Bool -> IO ()
 replicateUpdate SlaveState{..} rev reqId event syncing = do
-        debug $ "Got an Update to replicate " ++ show rev
-        modifyMVar_ slaveRevision $ \nr -> if rev - 1 == nr
-            then do
-                -- commit / run it locally
-                case reqId of
-                    Nothing -> replicateForeign
-                    Just rid -> replicateOwn rid
-                -- send reply: we're done
-                unless syncing $ sendToMaster slaveZmqSocket $ RepDone rev
-                return rev
-            else do
-                sendToMaster slaveZmqSocket RepError
-                void $ error $
-                    "Data.Acid.Centered.Slave: Replication failed at revision "
-                        ++ show nr ++ " -> " ++ show rev
-                return nr
-        where
-            replicateForeign =
-                if slaveStateIsRed then do
-                    act <- newEmptyMVar >>= scheduleLocalColdUpdate' (downcast slaveLocalState) event
-                    modifyMVar_ slaveRepFinalizers $ return . IM.insert rev act
-                else
-                    void $ scheduleColdUpdate slaveLocalState event
-            replicateOwn rid = do
-                act <- modifyMVar slaveRequests $ \srs -> do
-                    debug $ "This is the Update for Request " ++ show rid
-                    let (icallback, timeoutId) = srs IM.! rid
-                    callback <- icallback
-                    killThread timeoutId
-                    let nsrs = IM.delete rid srs
-                    return (nsrs, callback)
-                when slaveStateIsRed $
-                    modifyMVar_ slaveRepFinalizers $ return . IM.insert rev act
+    debug $ "Got an Update to replicate " ++ show rev
+    modifyMVar_ slaveRevision $ \nr -> if rev - 1 == nr
+        then do
+            -- commit / run it locally
+            case reqId of
+                Nothing -> replicateForeign
+                Just rid -> replicateOwn rid
+            -- send reply: we're done
+            unless syncing $ sendToMaster slaveZmqSocket $ RepDone rev
+            return rev
+        else do
+            sendToMaster slaveZmqSocket RepError
+            void $ error $
+                "Data.Acid.Centered.Slave: Replication failed at revision "
+                    ++ show nr ++ " -> " ++ show rev
+            return nr
+    where
+        replicateForeign =
+            if slaveStateIsRed then do
+                act <- newEmptyMVar >>= scheduleLocalColdUpdate' (downcast slaveLocalState) event
+                modifyMVar_ slaveRepFinalizers $ return . IM.insert rev act
+            else
+                void $ scheduleColdUpdate slaveLocalState event
+        replicateOwn rid = do
+            act <- modifyMVar slaveRequests $ \srs -> do
+                debug $ "This is the Update for Request " ++ show rid
+                let (icallback, timeoutId) = srs IM.! rid
+                callback <- icallback
+                killThread timeoutId
+                let nsrs = IM.delete rid srs
+                return (nsrs, callback)
+            when slaveStateIsRed $
+                modifyMVar_ slaveRepFinalizers $ return . IM.insert rev act
 
 repCheckpoint :: SlaveState st -> Revision -> IO ()
 repCheckpoint SlaveState{..} rev = do

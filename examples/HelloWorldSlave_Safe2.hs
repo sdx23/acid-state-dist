@@ -35,6 +35,8 @@ $(makeAcidic ''HelloWorldState ['writeState, 'queryState])
 main :: IO ()
 main = do
     acid <- enslaveState "localhost"  3333 (HelloWorldState "Hello world")
+    -- In contrast to the HelloWorldSlave_Safe.hs we do not have async
+    -- exceptions masked here:
     handle (\(e :: SomeException) -> putStrLn ("Exceptionally shut down Slave, due to: " ++ show e) >> closeAcidState acid) $ do
         putStrLn "Possible commands: x for exit; q for query; uString for update;"
         let loop = do

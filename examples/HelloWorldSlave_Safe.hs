@@ -32,7 +32,7 @@ queryState = do HelloWorldState string <- ask
 $(makeAcidic ''HelloWorldState ['writeState, 'queryState])
 
 main :: IO ()
-main = bracket
+main = bracket  -- use bracket for safe State deallocation on exceptions.
     (enslaveState "localhost"  3333 (HelloWorldState "Hello world"))
     (\acid -> putStrLn "Finally shutting down Slave." >> closeAcidState acid)
     $ \acid -> do

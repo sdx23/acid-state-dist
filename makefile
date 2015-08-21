@@ -1,3 +1,8 @@
+# This makefile is only for convenience in development,
+# use cabal for building.
+all:
+	echo "Not intended for building, only convenience functions."
+
 all-test:
 	cabal clean
 	cabal configure --enable-test

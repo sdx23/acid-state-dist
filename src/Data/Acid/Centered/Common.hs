@@ -40,15 +40,13 @@ import Data.Acid.CRC (crc16)
 import Control.Concurrent (threadDelay)
 
 import Control.Monad (liftM, liftM2, liftM3,
-                      unless, when
-                     )
+                      unless, when)
 import Control.Exception (Exception)
 
 import Data.ByteString.Lazy.Char8 (ByteString)
 import Data.Serialize (Serialize(..), put, get,
                        putWord8, getWord8,
-                       runPutLazy
-                      )
+                       runPutLazy)
 import Data.Word (Word16)
 
 #ifdef nodebug

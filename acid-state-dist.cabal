@@ -71,10 +71,14 @@ library
   -- Modules exported by the library.
   exposed-modules:     Data.Acid.Centered,
                        Data.Acid.Centered.Master,
-                       Data.Acid.Centered.Slave
+                       Data.Acid.Centered.Slave,
+                       Data.Acid.Raft
 
   -- Modules included in this library but not exported.
-  other-modules:       Data.Acid.Centered.Common
+  other-modules:       Data.Acid.Centered.Common,
+                       Data.Acid.Raft.Common,
+                       Data.Acid.Raft.Roles
+
 
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:

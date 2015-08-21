@@ -10,13 +10,17 @@ name:                acid-state-dist
 -- PVP summary:      +-+------- breaking API changes
 --                   | | +----- non-breaking API additions
 --                   | | | +--- code changes with no API change
-version:             0.1.0.0
+version:             0.1.0.1
 
 -- A short (one-line) description of the package.
-synopsis:            Replication backend for acid-state
+synopsis:            A replication backend for acid-state
 
 -- A longer description of the package.
--- description:
+description:         This package provides a backend to AcidState featuring
+                     MasterState and SlaveState. Using these allows you to run
+                     an acid-state application in a distributed setup, working
+                     with the same state everywhere. Optionally redundancy
+                     guarantees are available.
 
 -- The license under which the package is released.
 license:             MIT
@@ -40,7 +44,15 @@ build-type:          Simple
 
 -- Extra files to be distributed with the package, such as examples or a
 -- README.
--- extra-source-files:
+extra-source-files:  readme.md
+                     examples/*.hs
+                     examples/readme.md
+                     examples/slave1/*.hs
+                     examples/slave2/*.hs
+                     test/ConLossMaster.hs
+                     test/ConLossSlave.hs
+                     test/ConnectionLoss.sh
+                     test/readme.md
 
 -- Constraint on the version of Cabal needed to build this package.
 cabal-version:       >=1.10
@@ -48,7 +60,7 @@ cabal-version:       >=1.10
 -- Flag for controlling debug output
 flag debug
   description:       enable debug output
-  default:           True
+  default:           False
 
 -- Source
 source-repository head
@@ -70,7 +82,7 @@ library
   -- Other library packages from which modules are imported.
   build-depends:       base > 4.7 && < 4.9,
                        safecopy,
-                       acid-state > 0.12 && < 0.13,
+                       acid-state > 0.13 && < 0.14,
                        concurrent-extra,
                        cereal,
                        zeromq4-haskell,
@@ -90,7 +102,7 @@ library
   default-language:    Haskell2010
 
   default-extensions:       CPP
-  ghc-options:      -Wall -threaded
+  ghc-options:      -Wall
   -- Switch on debugging by "-Unodebug", off by "-Dnodebug"
   if flag(debug)
     cpp-options:      -Unodebug

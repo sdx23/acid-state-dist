@@ -27,8 +27,9 @@ module Data.Acid.Centered
     (
 -- * Usage
 -- |
--- Open your AcidState using one of the functions below. Afterwards the usual
--- interface of acid state is available.
+-- Open your AcidState using one of the functions below. Take care to use the
+-- same initial-state on all nodes. Afterwards the usual interface of acid state
+-- is available.
 --
 -- Always make sure to have sensible exception management since naturally a lot
 -- more error sources exist with this backend than do for a 'Data.Acid.Local'
@@ -43,7 +44,8 @@ module Data.Acid.Centered
 -- >               ...
 --
 -- 'Data.Acid.createCheckpoint' issued on Master is a global operation,
--- while issued on a Slave it is not.
+-- while issued on a Slave it is not. Note that Checkpoints on Master reduce the
+-- amount of Updates to be transferred when a Slave (re-)connects.
 --
 -- 'Data.Acid.createArchive' is an operation local to each node since usually
 -- further action is required. For global Archives see 'createArchiveGlobally'.

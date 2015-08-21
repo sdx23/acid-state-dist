@@ -19,7 +19,7 @@ synopsis:            Replication backend for acid-state
 -- description:
 
 -- The license under which the package is released.
-license:             GPL-3
+license:             MIT
 
 -- The file containing the license text.
 license-file:        LICENSE
@@ -29,12 +29,12 @@ author:              Max Voit
 
 -- An email address to which users can send suggestions, bug reports, and
 -- patches.
-maintainer:          max.voit+hdv@with-eyes.net
+maintainer:          <max.voit+hdv@with-eyes.net>
 
 -- A copyright notice.
 -- copyright:
 
-category:            Data
+category:            Database
 
 build-type:          Simple
 
@@ -50,6 +50,10 @@ flag debug
   description:       enable debug output
   default:           True
 
+-- Source
+source-repository head
+  type: git
+  location: http://git.with-eyes.net/gitweb/?p=acid-state-dist.git
 
 library
   -- Modules exported by the library.
